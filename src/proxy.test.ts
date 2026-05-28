@@ -1,10 +1,11 @@
-import { Readable } from 'node:stream';
+import { Readable, Transform, PassThrough } from 'node:stream';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('undici', () => ({ request: vi.fn() }));
 
 import { request } from 'undici';
 import { createApp } from './server';
+import type { Adapter, Provider, Router } from './routing';
 
 const mockRequest = vi.mocked(request);
 
@@ -267,6 +268,386 @@ describe('POST /v1/messages', () => {
     it('returns 404 for GET /v1/messages', async () => {
       const res = await app.request('/v1/messages', { method: 'GET' });
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('provider routing', () => {
+    const makeProvider = (name: string, baseUrl: string): Provider => ({ name, baseUrl });
+
+    it('uses the URL returned by the router', async () => {
+      const customProvider = makeProvider('custom', 'https://custom.example.com');
+      const router: Router = () => [customProvider];
+      app = createApp({ router });
+      mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+      await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(BASE_REQUEST),
+      });
+
+      const [url] = mockRequest.mock.calls[0] as [string, unknown];
+      expect(url).toBe('https://custom.example.com/v1/messages');
+    });
+
+    it('routes to ollama when model starts with ollama/', async () => {
+      const ollamaProvider = makeProvider('ollama', 'http://localhost:11434');
+      const router: Router = (ctx) =>
+        ctx.model.startsWith('ollama/') ? [ollamaProvider] : [makeProvider('anthropic', 'https://api.anthropic.com')];
+      app = createApp({ router });
+      mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+      await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...BASE_REQUEST, model: 'ollama/llama3' }),
+      });
+
+      const [url] = mockRequest.mock.calls[0] as [string, unknown];
+      expect(url).toBe('http://localhost:11434/v1/messages');
+    });
+
+    it('routes to anthropic fallback for non-ollama models', async () => {
+      const ollamaProvider = makeProvider('ollama', 'http://localhost:11434');
+      const router: Router = (ctx) =>
+        ctx.model.startsWith('ollama/') ? [ollamaProvider] : [makeProvider('anthropic', 'https://api.anthropic.com')];
+      app = createApp({ router });
+      mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+      await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(BASE_REQUEST),
+      });
+
+      const [url] = mockRequest.mock.calls[0] as [string, unknown];
+      expect(url).toBe('https://api.anthropic.com/v1/messages');
+    });
+
+    it('passes stream flag to the router', async () => {
+      let capturedStream: boolean | undefined;
+      const router: Router = (ctx) => { capturedStream = ctx.stream; return [makeProvider('anthropic', 'https://api.anthropic.com')]; };
+      app = createApp({ router });
+      mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+      await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...BASE_REQUEST, stream: false }),
+      });
+
+      expect(capturedStream).toBe(false);
+    });
+  });
+
+  describe('fallback chains', () => {
+    const makeProvider = (name: string, baseUrl: string): Provider => ({ name, baseUrl });
+
+    it('falls back to the second provider when the first has a network error', async () => {
+      const primary = makeProvider('primary', 'https://primary.example.com');
+      const secondary = makeProvider('secondary', 'https://secondary.example.com');
+      const router: Router = () => [primary, secondary];
+      app = createApp({ router });
+
+      mockRequest
+        .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+        .mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+      const res = await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(BASE_REQUEST),
+      });
+
+      expect(res.status).toBe(200);
+      const [url] = mockRequest.mock.calls[1] as [string, unknown];
+      expect(url).toBe('https://secondary.example.com/v1/messages');
+    });
+
+    it('falls back to the second provider when the first returns 5xx', async () => {
+      const primary = makeProvider('primary', 'https://primary.example.com');
+      const secondary = makeProvider('secondary', 'https://secondary.example.com');
+      const router: Router = () => [primary, secondary];
+      app = createApp({ router });
+
+      mockRequest
+        .mockResolvedValueOnce(mockUpstream(503, '{"error":"unavailable"}') as never)
+        .mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+      const res = await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(BASE_REQUEST),
+      });
+
+      expect(res.status).toBe(200);
+      const [, secondUrl] = mockRequest.mock.calls.map(([url]) => url) as string[];
+      expect(secondUrl).toBe('https://secondary.example.com/v1/messages');
+    });
+
+    it('returns 502 when all providers fail', async () => {
+      const router: Router = () => [
+        makeProvider('p1', 'https://p1.example.com'),
+        makeProvider('p2', 'https://p2.example.com'),
+      ];
+      app = createApp({ router });
+
+      mockRequest
+        .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+        .mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+      const res = await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(BASE_REQUEST),
+      });
+
+      expect(res.status).toBe(502);
+      const json = await res.json();
+      expect(json.error.type).toBe('proxy_error');
+    });
+
+    it('does not retry on 4xx — forwards the error response directly', async () => {
+      const primary = makeProvider('primary', 'https://primary.example.com');
+      const secondary = makeProvider('secondary', 'https://secondary.example.com');
+      const router: Router = () => [primary, secondary];
+      app = createApp({ router });
+
+      const errorBody = JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'bad' } });
+      mockRequest.mockResolvedValueOnce(mockUpstream(400, errorBody) as never);
+
+      const res = await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(BASE_REQUEST),
+      });
+
+      expect(res.status).toBe(400);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to secondary for 5xx even when streaming', async () => {
+      const primary = makeProvider('primary', 'https://primary.example.com');
+      const secondary = makeProvider('secondary', 'https://secondary.example.com');
+      const router: Router = () => [primary, secondary];
+      app = createApp({ router });
+
+      const SSE_EVENTS = [
+        `event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":1}}}\n\n`,
+        `event: message_stop\ndata: {"type":"message_stop"}\n\n`,
+      ];
+      mockRequest
+        .mockResolvedValueOnce(mockUpstream(503, '{"error":"unavailable"}') as never)
+        .mockResolvedValueOnce(mockSSEUpstream(SSE_EVENTS) as never);
+
+      const res = await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...BASE_REQUEST, stream: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).toContain('message_stop');
+    });
+  });
+
+  describe('adapter integration', () => {
+    function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
+      return {
+        path: '/v2/translated',
+        translateRequest: (body) => ({ ...body, _translated: true }),
+        translateResponse: (body) => ({
+          id: 'msg_translated',
+          type: 'message',
+          role: 'assistant',
+          model: 'translated-model',
+          content: [{ type: 'text', text: 'TRANSLATED' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+          ...body,
+        }),
+        createStreamTranslator: () => new PassThrough(),
+        ...overrides,
+      };
+    }
+
+    function providerWithAdapter(adapter: Adapter): Provider {
+      return { name: 'test', baseUrl: 'https://test.example.com', adapter };
+    }
+
+    beforeEach(() => {
+      app = createApp({ router: () => [providerWithAdapter(makeAdapter())] });
+    });
+
+    describe('request translation', () => {
+      it('sends the translated request body to upstream', async () => {
+        mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+        await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(BASE_REQUEST),
+        });
+
+        const [, options] = mockRequest.mock.calls[0] as [unknown, Record<string, unknown>];
+        const sentBody = JSON.parse((options.body as Buffer).toString('utf8'));
+        expect(sentBody._translated).toBe(true);
+      });
+
+      it('uses adapter.path instead of /v1/messages', async () => {
+        mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+        await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(BASE_REQUEST),
+        });
+
+        const [url] = mockRequest.mock.calls[0] as [string, unknown];
+        expect(url).toBe('https://test.example.com/v2/translated');
+      });
+
+      it('recomputes content-length for the translated body', async () => {
+        const largeBody = { ...BASE_REQUEST, _extra: 'x'.repeat(500) };
+        const adapter = makeAdapter({
+          translateRequest: (body) => ({ ...body, _extra: 'x'.repeat(500) }),
+        });
+        app = createApp({ router: () => [providerWithAdapter(adapter)] });
+        mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+        await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'content-length': '9999' },
+          body: JSON.stringify(largeBody),
+        });
+
+        const [, options] = mockRequest.mock.calls[0] as [unknown, Record<string, unknown>];
+        const sentBody = (options.body as Buffer);
+        const forwarded = options.headers as Record<string, string>;
+        expect(forwarded['content-length']).toBe(String(sentBody.byteLength));
+      });
+
+      it('sends original body when no adapter is present', async () => {
+        app = createApp({ router: () => [{ name: 'anthropic', baseUrl: 'https://api.anthropic.com' }] });
+        mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+        const originalBody = JSON.stringify(BASE_REQUEST);
+
+        await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: originalBody,
+        });
+
+        const [, options] = mockRequest.mock.calls[0] as [unknown, Record<string, unknown>];
+        const sentBody = JSON.parse((options.body as Buffer).toString('utf8'));
+        expect(sentBody._translated).toBeUndefined();
+      });
+    });
+
+    describe('non-streaming response translation', () => {
+      it('returns the adapter-translated response to the client', async () => {
+        const translatedResponse = JSON.stringify({
+          id: 'msg_translated',
+          type: 'message',
+          role: 'assistant',
+          model: 'translated-model',
+          content: [{ type: 'text', text: 'TRANSLATED' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        });
+        const adapter = makeAdapter({
+          translateResponse: () => JSON.parse(translatedResponse),
+        });
+        app = createApp({ router: () => [providerWithAdapter(adapter)] });
+        mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+        const res = await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(BASE_REQUEST),
+        });
+
+        const json = await res.json() as Record<string, unknown>;
+        expect((json.content as Array<{ text: string }>)[0].text).toBe('TRANSLATED');
+      });
+
+      it('updates content-length to match the translated body size', async () => {
+        const shortBody = JSON.stringify({ type: 'message', content: [{ type: 'text', text: 'hi' }] });
+        const adapter = makeAdapter({ translateResponse: () => JSON.parse(shortBody) });
+        app = createApp({ router: () => [providerWithAdapter(adapter)] });
+        mockRequest.mockResolvedValueOnce(
+          mockUpstream(200, NON_STREAMING_RESPONSE, { 'content-length': '9999' }) as never
+        );
+
+        const res = await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(BASE_REQUEST),
+        });
+
+        expect(res.headers.get('content-length')).toBe(String(Buffer.byteLength(shortBody)));
+      });
+
+      it('returns the original response if translation throws', async () => {
+        const adapter = makeAdapter({
+          translateResponse: () => { throw new Error('translation failed'); },
+        });
+        app = createApp({ router: () => [providerWithAdapter(adapter)] });
+        mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+        const res = await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(BASE_REQUEST),
+        });
+
+        expect(res.status).toBe(200);
+        const json = await res.json() as Record<string, unknown>;
+        expect((json.content as Array<{ text: string }>)[0].text).toBe('Hi there');
+      });
+    });
+
+    describe('streaming response translation', () => {
+      it('pipes the upstream body through the adapter stream translator', async () => {
+        const SSE_EVENTS = [
+          `event: message_start\ndata: {"type":"message_start","message":{"model":"adapter-model","usage":{"input_tokens":1,"output_tokens":0}}}\n\n`,
+          `event: message_stop\ndata: {"type":"message_stop"}\n\n`,
+        ];
+        const adapter = makeAdapter({
+          createStreamTranslator: () => {
+            let emitted = false;
+            return new Transform({
+              transform(_chunk, _enc, cb) {
+                if (!emitted) {
+                  emitted = true;
+                  for (const e of SSE_EVENTS) this.push(e);
+                }
+                cb();
+              },
+              flush(cb) { cb(); },
+            });
+          },
+        });
+        app = createApp({ router: () => [providerWithAdapter(adapter)] });
+
+        const upstreamChunks = ['data: upstream-chunk\n\n'];
+        mockRequest.mockResolvedValueOnce({
+          statusCode: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: Readable.from(upstreamChunks.map((e) => Buffer.from(e))),
+        } as never);
+
+        const res = await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...BASE_REQUEST, stream: true }),
+        });
+
+        const text = await res.text();
+        expect(text).toContain('adapter-model');
+        expect(text).toContain('message_stop');
+      });
     });
   });
 });

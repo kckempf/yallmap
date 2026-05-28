@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { proxyMessages } from './proxy';
+import { type Router } from './routing';
 
-export function createApp(): Hono {
+export function createApp(options?: { router?: Router }): Hono {
   const app = new Hono();
 
   app.use('*', async (c, next) => {
@@ -13,7 +14,7 @@ export function createApp(): Hono {
 
   app.get('/health', (c) => c.json({ status: 'ok', version: '0.1.0' }));
 
-  app.post('/v1/messages', proxyMessages);
+  app.post('/v1/messages', (c) => proxyMessages(c, options?.router));
 
   app.notFound((c) =>
     c.json({ type: 'error', error: { type: 'not_found', message: 'route not found' } }, 404)
