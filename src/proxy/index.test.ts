@@ -4,8 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('undici', () => ({ request: vi.fn() }));
 
 import { request } from 'undici';
-import { createApp } from './server';
-import type { Adapter, Provider, Router } from './routing';
+import { createApp } from '../server';
+import type { Adapter, Provider, Router } from '../routing';
 
 const mockRequest = vi.mocked(request);
 
@@ -159,7 +159,8 @@ describe('POST /v1/messages', () => {
       expect(json.error.type).toBe('invalid_request_error');
     });
 
-    it('forwards upstream 529 (overloaded) to the client', async () => {
+    it('forwards upstream 529 (overloaded) to the client when no retries remain', async () => {
+      app = createApp({ retryOptions: { maxRetries: 0, baseDelayMs: 0, retryOn: () => false } });
       mockRequest.mockResolvedValueOnce(mockUpstream(529, '{"error":"overloaded"}') as never);
       const res = await app.request('/v1/messages', {
         method: 'POST',
@@ -342,12 +343,14 @@ describe('POST /v1/messages', () => {
 
   describe('fallback chains', () => {
     const makeProvider = (name: string, baseUrl: string): Provider => ({ name, baseUrl });
+    // Disable retries for fallback tests — retry behaviour is tested separately
+    const noRetry = { maxRetries: 0, baseDelayMs: 0, retryOn: () => false };
 
     it('falls back to the second provider when the first has a network error', async () => {
       const primary = makeProvider('primary', 'https://primary.example.com');
       const secondary = makeProvider('secondary', 'https://secondary.example.com');
       const router: Router = () => [primary, secondary];
-      app = createApp({ router });
+      app = createApp({ router, retryOptions: noRetry });
 
       mockRequest
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
@@ -368,7 +371,7 @@ describe('POST /v1/messages', () => {
       const primary = makeProvider('primary', 'https://primary.example.com');
       const secondary = makeProvider('secondary', 'https://secondary.example.com');
       const router: Router = () => [primary, secondary];
-      app = createApp({ router });
+      app = createApp({ router, retryOptions: noRetry });
 
       mockRequest
         .mockResolvedValueOnce(mockUpstream(503, '{"error":"unavailable"}') as never)
@@ -390,7 +393,7 @@ describe('POST /v1/messages', () => {
         makeProvider('p1', 'https://p1.example.com'),
         makeProvider('p2', 'https://p2.example.com'),
       ];
-      app = createApp({ router });
+      app = createApp({ router, retryOptions: noRetry });
 
       mockRequest
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
@@ -411,7 +414,7 @@ describe('POST /v1/messages', () => {
       const primary = makeProvider('primary', 'https://primary.example.com');
       const secondary = makeProvider('secondary', 'https://secondary.example.com');
       const router: Router = () => [primary, secondary];
-      app = createApp({ router });
+      app = createApp({ router, retryOptions: noRetry });
 
       const errorBody = JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'bad' } });
       mockRequest.mockResolvedValueOnce(mockUpstream(400, errorBody) as never);
@@ -430,7 +433,7 @@ describe('POST /v1/messages', () => {
       const primary = makeProvider('primary', 'https://primary.example.com');
       const secondary = makeProvider('secondary', 'https://secondary.example.com');
       const router: Router = () => [primary, secondary];
-      app = createApp({ router });
+      app = createApp({ router, retryOptions: noRetry });
 
       const SSE_EVENTS = [
         `event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":1}}}\n\n`,
@@ -649,6 +652,128 @@ describe('POST /v1/messages', () => {
         expect(text).toContain('message_stop');
       });
     });
+  });
+});
+
+describe('retry behaviour', () => {
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const makeProvider = (name: string, baseUrl: string) => ({ name, baseUrl });
+
+  it('retries the same provider on 429 and succeeds on next attempt', async () => {
+    const router = () => [makeProvider('anthropic', 'https://api.anthropic.com')];
+    app = createApp({
+      router,
+      retryOptions: { maxRetries: 2, baseDelayMs: 0, retryOn: (s) => s === 429 },
+    });
+
+    mockRequest
+      .mockResolvedValueOnce(mockUpstream(429, '{"error":"rate_limit"}', { 'retry-after': '0' }) as never)
+      .mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+    const [url1] = mockRequest.mock.calls[0] as [string, unknown];
+    const [url2] = mockRequest.mock.calls[1] as [string, unknown];
+    expect(url1).toBe('https://api.anthropic.com/v1/messages');
+    expect(url2).toBe('https://api.anthropic.com/v1/messages');
+  });
+
+  it('retries the same provider on 503', async () => {
+    const router = () => [makeProvider('anthropic', 'https://api.anthropic.com')];
+    app = createApp({
+      router,
+      retryOptions: { maxRetries: 1, baseDelayMs: 0, retryOn: (s) => s === 503 },
+    });
+
+    mockRequest
+      .mockResolvedValueOnce(mockUpstream(503, '{"error":"unavailable"}') as never)
+      .mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('forwards the retryable status after exhausting all attempts on a single provider', async () => {
+    const router = () => [makeProvider('anthropic', 'https://api.anthropic.com')];
+    app = createApp({
+      router,
+      retryOptions: { maxRetries: 1, baseDelayMs: 0, retryOn: (s) => s === 529 },
+    });
+
+    mockRequest
+      .mockResolvedValueOnce(mockUpstream(529, '{"error":"overloaded"}') as never)
+      .mockResolvedValueOnce(mockUpstream(529, '{"error":"overloaded"}') as never);
+
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    expect(res.status).toBe(529);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries successfully when Retry-After is absent (falls back to baseDelayMs=0)', async () => {
+    const router = () => [makeProvider('anthropic', 'https://api.anthropic.com')];
+    app = createApp({
+      router,
+      retryOptions: { maxRetries: 1, baseDelayMs: 0, retryOn: (s) => s === 429 },
+    });
+
+    mockRequest
+      .mockResolvedValueOnce(mockUpstream(429, '{"error":"rate_limit"}') as never)
+      .mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls through to next provider after exhausting retries', async () => {
+    const primary = makeProvider('primary', 'https://primary.example.com');
+    const secondary = makeProvider('secondary', 'https://secondary.example.com');
+    const router = () => [primary, secondary];
+    app = createApp({
+      router,
+      retryOptions: { maxRetries: 1, baseDelayMs: 0, retryOn: (s) => s === 429 },
+    });
+
+    mockRequest
+      .mockResolvedValueOnce(mockUpstream(429, '{"error":"rate_limit"}', { 'retry-after': '0' }) as never)
+      .mockResolvedValueOnce(mockUpstream(429, '{"error":"rate_limit"}', { 'retry-after': '0' }) as never)
+      .mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockRequest).toHaveBeenCalledTimes(3);
+    const [thirdUrl] = mockRequest.mock.calls[2] as [string, unknown];
+    expect(thirdUrl).toBe('https://secondary.example.com/v1/messages');
   });
 });
 

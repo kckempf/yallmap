@@ -10,7 +10,7 @@ without changing any client code.
 
 ## Status
 
-**v0.2** — TypeScript routing policies, Ollama support, fallback chains, OTel observability.
+**v0.3** — Cost tracking, exponential retry with backoff, structured pino logging.
 
 ## How it works
 
@@ -110,10 +110,64 @@ export const router = firstMatch([
 ### Fallback behaviour
 
 When a provider list is returned (via `chain`), the proxy tries each in order:
-- **Network error** — try the next provider
-- **5xx response** — drain the body, try the next provider
-- **4xx response** — forward to the client immediately (no retry)
+- **429 / 503 / 529** — retry the same provider with exponential backoff (see [Retries](#retries))
+- **Other 5xx** — drain the body, try the next provider immediately
+- **Network error** — try the next provider immediately
+- **4xx** — forward to the client immediately (no retry)
 - **All providers exhausted** — return 502
+
+## Retries
+
+The proxy retries 429 (rate limited), 503 (service unavailable), and 529 (Anthropic
+overloaded) on the same provider before falling back to the next one.
+
+**Backoff**: full jitter — `random(0, baseDelay × 2^attempt)`. If the upstream sends a
+`Retry-After` header (≤ 60 s), that value is used instead.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_RETRIES` | `3` | Per-provider retry attempts |
+| `RETRY_BASE_DELAY_MS` | `1000` | Base delay for backoff (ms) |
+
+## Logging
+
+Request logs are written as structured JSON to stdout — compatible with CloudWatch,
+Datadog, or any log aggregation tool.
+
+```json
+{"level":30,"time":1748470913,"requestId":"a3f7b912","method":"POST","path":"/v1/messages",
+ "status":200,"latencyMs":487,"model":"claude-sonnet-4-6","provider":"anthropic",
+ "inputTokens":343,"outputTokens":13,"costUsd":0.000224}
+```
+
+In development (`NODE_ENV=development`), set `LOG_LEVEL=debug` and logs are formatted
+with `pino-pretty` for readability.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_LEVEL` | `info` | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `fatal` |
+
+## Cost tracking
+
+The `gen_ai.usage.cost_usd` span attribute is set on every non-streaming response where
+the model is in the pricing table. Cost also appears in the request log as `costUsd`.
+
+Pricing data lives in `src/pricing/anthropic.ts` (auto-generated). To refresh it:
+
+```bash
+npm run update-pricing
+```
+
+The script fetches the [LiteLLM community pricing registry](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json),
+validates the schema, prints a human-readable diff, and regenerates the file. It exits
+non-zero if the upstream schema changes in a breaking way, so CI fails loudly.
+
+A GitHub Actions workflow (`.github/workflows/update-pricing.yml`) runs this every
+Monday and opens a PR when prices change.
 
 ## What you see in Langfuse
 
@@ -127,6 +181,7 @@ Each request produces a `gen_ai.request` span with:
 | `gen_ai.response.model` | `claude-sonnet-4-6` |
 | `gen_ai.usage.input_tokens` | `343` |
 | `gen_ai.usage.output_tokens` | `13` |
+| `gen_ai.usage.cost_usd` | `0.000224` |
 | `gen_ai.response.finish_reasons` | `["end_turn"]` |
 
 `gen_ai.system` reflects the provider that actually handled the request — useful for
@@ -158,7 +213,7 @@ to the client.
 
 - [x] v0.1 — transparent Anthropic proxy + OTel observability
 - [x] v0.2 — TypeScript routing policies, Ollama adapter, fallback chains
-- [ ] v0.3 — cost tracking, retries, structured request logging
+- [x] v0.3 — cost tracking, exponential retry with backoff, structured pino logging
 - [ ] v0.4 — CDK constructs for AWS deployment
 
 ## License

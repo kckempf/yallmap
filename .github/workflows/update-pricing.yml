@@ -1,0 +1,35 @@
+name: Update Anthropic pricing table
+
+on:
+  schedule:
+    - cron: '23 9 * * 1'   # Monday 9:23 UTC
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run pricing update
+        id: pricing
+        run: npm run update-pricing 2>&1 | tee /tmp/pricing-diff.txt
+
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          title: 'chore: update Anthropic pricing table'
+          branch: auto/update-pricing
+          commit-message: 'chore: update Anthropic pricing table'
+          body-path: /tmp/pricing-diff.txt
+          labels: automated
