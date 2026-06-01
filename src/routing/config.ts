@@ -12,14 +12,21 @@
  * Available providers:
  *   anthropic  — api.anthropic.com  (override with ANTHROPIC_BASE_URL)
  *   ollama     — localhost:11434    (override with OLLAMA_BASE_URL)
+ *
+ * modelOverride: maps the incoming model name to a different name on the target provider.
+ * Useful for routing Claude Code's claude-* model names to local Ollama models:
+ *
+ *   import { ollamaAdapter } from '../adapters';
+ *   const ollamaHaiku = { ...ollama, modelOverride: 'qwen3:8b' };
+ *   whenModel('claude-haiku-4-5', chain(ollamaHaiku, anthropic))
+ *     → haiku requests go to qwen3:8b locally, fall back to Anthropic if Ollama is down
  */
 import { firstMatch, whenModel, chain, anthropic, ollama } from './index';
 
 export const router = firstMatch([
   whenModel(/^ollama\//i, chain(ollama, anthropic)),  // fall back to Anthropic if Ollama is unavailable
-  // Add your rules here, for example:
-  // whenModel(/^mistral\//, ollama),
-  // whenModel('claude-haiku-4-5', anthropic),
+  // Route claude-haiku-4-5 to a local model, fall back to Anthropic:
+  // whenModel('claude-haiku-4-5', chain({ ...ollama, modelOverride: 'qwen3:8b' }, anthropic)),
 ]);
 
 // Re-export providers so users can reference them without a second import

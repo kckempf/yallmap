@@ -548,6 +548,39 @@ describe('POST /v1/messages', () => {
       });
     });
 
+    describe('modelOverride', () => {
+      it('substitutes the model name sent to the adapter when modelOverride is set', async () => {
+        const provider = { name: 'ollama', baseUrl: 'https://ollama.example.com', adapter: makeAdapter(), modelOverride: 'qwen3:8b' };
+        app = createApp({ router: () => [provider] });
+        mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+        await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...BASE_REQUEST, model: 'claude-haiku-4-5' }),
+        });
+
+        const [, options] = mockRequest.mock.calls[0] as [unknown, Record<string, unknown>];
+        const sentBody = JSON.parse((options.body as Buffer).toString('utf8'));
+        expect(sentBody.model).toBe('qwen3:8b');
+      });
+
+      it('sends the original model name when modelOverride is absent', async () => {
+        app = createApp({ router: () => [providerWithAdapter(makeAdapter())] });
+        mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+        await app.request('/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...BASE_REQUEST, model: 'claude-haiku-4-5' }),
+        });
+
+        const [, options] = mockRequest.mock.calls[0] as [unknown, Record<string, unknown>];
+        const sentBody = JSON.parse((options.body as Buffer).toString('utf8'));
+        expect(sentBody.model).toBe('claude-haiku-4-5');
+      });
+    });
+
     describe('non-streaming response translation', () => {
       it('returns the adapter-translated response to the client', async () => {
         const translatedResponse = JSON.stringify({

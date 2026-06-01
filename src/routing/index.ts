@@ -6,6 +6,8 @@ export interface Provider {
   name: string;
   baseUrl: string;
   adapter: ProviderAdapter;
+  /** Override the model name sent to this provider (e.g. map claude-haiku-4-5 → qwen3:8b) */
+  modelOverride?: string;
 }
 
 export interface RequestContext {

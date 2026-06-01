@@ -1,5 +1,5 @@
 import { request as undiciRequest } from 'undici';
-import { trace, SpanKind } from '@opentelemetry/api';
+import { trace, context, propagation, SpanKind } from '@opentelemetry/api';
 import type { Context } from 'hono';
 import { firstMatch, type Router } from '../routing';
 import { handleResponse } from './response';
@@ -12,6 +12,7 @@ const FALLBACK_ROUTER = firstMatch([]);
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailers', 'transfer-encoding', 'upgrade', 'host',
+  'x-session-id',  // gateway-only header — not forwarded upstream
 ]);
 
 export async function proxyMessages(
@@ -32,6 +33,13 @@ export async function proxyMessages(
   const requestId: string = (c as Context & { get: (k: string) => string }).get('requestId') ?? 'unknown';
   c.set('model' as never, model as never);
 
+  // Extract W3C trace context from incoming headers so agent-loop spans nest correctly
+  const carrier: Record<string, string> = {};
+  for (const [k, v] of c.req.raw.headers.entries()) carrier[k] = v;
+  const parentCtx = propagation.extract(context.active(), carrier);
+
+  const sessionId = c.req.header('x-session-id');
+
   const clientHeaders: Record<string, string> = {};
   for (const [key, value] of c.req.raw.headers.entries()) {
     if (HOP_BY_HOP.has(key)) continue;
@@ -46,7 +54,9 @@ export async function proxyMessages(
       'gen_ai.request.model': model,
       ...(maxTokens !== undefined ? { 'gen_ai.request.max_tokens': maxTokens } : {}),
     },
-  });
+  }, parentCtx);
+
+  if (sessionId) span.setAttribute('session.id', sessionId);
 
   let lastError: unknown;
   const { maxRetries, baseDelayMs, retryOn } = retryOptions;
@@ -54,9 +64,10 @@ export async function proxyMessages(
   for (let i = 0; i < providers.length; i++) {
     const provider = providers[i];
     const hasNext = i < providers.length - 1;
-    const { adapter } = provider;
+    const { adapter, modelOverride } = provider;
     const upstreamPath = adapter.path;
-    const upstreamBody = Buffer.from(JSON.stringify(adapter.translateRequest(parsedBody)));
+    const bodyForAdapter = modelOverride ? { ...parsedBody, model: modelOverride } : parsedBody;
+    const upstreamBody = Buffer.from(JSON.stringify(adapter.translateRequest(bodyForAdapter)));
 
     const upstreamHeaders = {
       ...clientHeaders,

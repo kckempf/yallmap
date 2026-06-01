@@ -11,6 +11,8 @@ without changing any client code.
 ## Status
 
 **v0.5** — Formalized `ProviderAdapter` interface; adding a new LLM provider is now a single file.
+Agent session groundwork: W3C trace context propagation and `x-session-id` header for correlating
+multi-call agent runs in Langfuse.
 
 ## How it works
 
@@ -115,6 +117,36 @@ When a provider list is returned (via `chain`), the proxy tries each in order:
 - **Network error** — try the next provider immediately
 - **4xx** — forward to the client immediately (no retry)
 - **All providers exhausted** — return 502
+
+## Agent sessions
+
+When an agent makes many LLM calls in a loop, the gateway can correlate them into a
+single session in Langfuse using either of two mechanisms:
+
+### `x-session-id` header — simple loops
+
+Set the same UUID on every call in an agent run. The gateway attaches it as a `session.id` span attribute (standard OTel; also recognised
+by Langfuse) and strips the header before forwarding to upstream.
+
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+import { randomUUID } from 'crypto';
+
+const client = new Anthropic({ baseURL: 'http://localhost:3001' });
+const sessionId = randomUUID();
+
+for (const step of agentSteps) {
+  await client.messages.create(step, {
+    headers: { 'x-session-id': sessionId },
+  });
+}
+```
+
+### W3C `traceparent` — OTel-instrumented frameworks
+
+If your agent framework (LangChain, CrewAI, custom OTel setup) propagates W3C trace
+context, the gateway automatically nests its `gen_ai.request` spans as children of the
+incoming trace. No code changes needed on the client side.
 
 ## Retries
 
@@ -257,7 +289,7 @@ to the client.
 - [x] v0.2 — TypeScript routing policies, Ollama adapter, fallback chains
 - [x] v0.3 — cost tracking, exponential retry with backoff, structured pino logging
 - [x] v0.4 — CDK construct for ECS Fargate deployment ([cdk-llm-gateway](https://github.com/kevinkempf/cdk-llm-gateway))
-- [x] v0.5 — formalized `ProviderAdapter` interface; drop-in provider plugins
+- [x] v0.5 — formalized `ProviderAdapter` interface; drop-in provider plugins; agent session groundwork (`x-session-id`, W3C trace context)
 - [ ] v0.6 — compile-time middleware chain (cost guards, rate limiting, PII redaction)
 
 ## License

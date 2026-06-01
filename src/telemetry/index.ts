@@ -2,6 +2,7 @@ import { NodeSDK } from '@opentelemetry/sdk-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
 
 export function initTelemetry(): void {
   const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
@@ -22,6 +23,7 @@ export function initTelemetry(): void {
     traceExporter: exporter,
     // No auto-instrumentations — we emit gen_ai.* spans explicitly
     instrumentations: [],
+    textMapPropagator: new W3CTraceContextPropagator(),
   });
 
   sdk.start();
