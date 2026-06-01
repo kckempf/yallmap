@@ -7,6 +7,7 @@ import { request } from 'undici';
 import { createApp } from '../server';
 import type { ProviderAdapter, Provider, Router } from '../routing';
 import { anthropicAdapter } from '../adapters';
+import type { MiddlewareFn } from '../middleware/types';
 
 const mockRequest = vi.mocked(request);
 
@@ -819,5 +820,65 @@ describe('GET /health', () => {
     const json = await res.json();
     expect(json.status).toBe('ok');
     expect(json.version).toBe('0.1.0');
+  });
+});
+
+describe('middleware integration', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('middleware is invoked for each request', async () => {
+    const called = vi.fn(async (_ctx, next) => next());
+    const app = createApp({ middlewares: [called as unknown as MiddlewareFn] });
+    mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+    await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    expect(called).toHaveBeenCalledOnce();
+  });
+
+  it('short-circuiting middleware prevents upstream call', async () => {
+    const blocker: MiddlewareFn = async () =>
+      new Response(JSON.stringify({ type: 'error', error: { type: 'blocked', message: 'blocked' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      });
+
+    const app = createApp({ middlewares: [blocker] });
+
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    expect(res.status).toBe(429);
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+
+  it('body mutated by middleware is forwarded upstream', async () => {
+    const redactor: MiddlewareFn = async (ctx, next) => {
+      ctx.body = {
+        ...ctx.body,
+        messages: [{ role: 'user', content: '[REDACTED]' }],
+      };
+      return next();
+    };
+
+    const app = createApp({ middlewares: [redactor] });
+    mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+    await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    const [, options] = mockRequest.mock.calls[0] as [unknown, Record<string, unknown>];
+    const sentBody = JSON.parse((options.body as Buffer).toString('utf8'));
+    expect(sentBody.messages).toEqual([{ role: 'user', content: '[REDACTED]' }]);
   });
 });

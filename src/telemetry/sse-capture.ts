@@ -6,6 +6,7 @@ export type GenAiAttrs = {
   'gen_ai.usage.input_tokens'?: number;
   'gen_ai.usage.output_tokens'?: number;
   'gen_ai.response.finish_reasons'?: string[];
+  'gen_ai.completion'?: string;  // set only when captureContent=true
 };
 
 // Transform stream that passes every byte through untouched while
@@ -13,12 +14,15 @@ export type GenAiAttrs = {
 // onComplete is called exactly once when the stream ends.
 export class SseCapture extends Transform {
   private readonly onComplete: (attrs: GenAiAttrs) => void;
+  private readonly captureContent: boolean;
   private pending = '';
   private attrs: GenAiAttrs = {};
+  private textChunks: string[] = [];
 
-  constructor(onComplete: (attrs: GenAiAttrs) => void) {
+  constructor(onComplete: (attrs: GenAiAttrs) => void, captureContent = false) {
     super();
     this.onComplete = onComplete;
+    this.captureContent = captureContent;
   }
 
   _transform(chunk: Buffer, _enc: string, cb: TransformCallback): void {
@@ -30,6 +34,9 @@ export class SseCapture extends Transform {
   }
 
   _flush(cb: TransformCallback): void {
+    if (this.captureContent && this.textChunks.length > 0) {
+      this.attrs['gen_ai.completion'] = JSON.stringify([{ type: 'text', text: this.textChunks.join('') }]);
+    }
     this.onComplete(this.attrs);
     cb();
   }
@@ -75,6 +82,11 @@ export class SseCapture extends Transform {
       const delta = event.delta as Record<string, unknown> | undefined;
       if (typeof delta?.stop_reason === 'string') {
         this.attrs['gen_ai.response.finish_reasons'] = [delta.stop_reason];
+      }
+    } else if (this.captureContent && event.type === 'content_block_delta') {
+      const delta = event.delta as Record<string, unknown> | undefined;
+      if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        this.textChunks.push(delta.text);
       }
     }
   }

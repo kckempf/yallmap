@@ -21,10 +21,19 @@ export async function handleResponse(
   parsedBody: Record<string, unknown>,
   isStreaming: boolean,
   c?: Context,
+  captureContent = false,
 ): Promise<Response> {
   const { adapter } = provider;
 
   span.setAttribute('gen_ai.system', provider.name);
+
+  if (captureContent) {
+    const messages = Array.isArray(parsedBody.messages) ? parsedBody.messages : [];
+    const prompt = typeof parsedBody.system === 'string'
+      ? [{ role: 'system', content: parsedBody.system }, ...messages]
+      : messages;
+    span.setAttribute('gen_ai.prompt', JSON.stringify(prompt));
+  }
 
   const responseHeaders = new Headers();
   for (const [key, value] of Object.entries(upstream.headers)) {
@@ -42,7 +51,7 @@ export async function handleResponse(
       }
       span.setStatus({ code: SpanStatusCode.OK });
       span.end();
-    });
+    }, captureContent);
 
     const passthrough = new PassThrough();
     const handlePipelineError = (err: unknown) => {
@@ -74,6 +83,10 @@ export async function handleResponse(
     const responseJson = JSON.parse(responseBody.toString('utf8')) as Record<string, unknown>;
     const attrs = extractResponseAttributes(responseJson);
     if (Object.keys(attrs).length) span.setAttributes(attrs);
+
+    if (captureContent && responseJson.content !== undefined) {
+      span.setAttribute('gen_ai.completion', JSON.stringify(responseJson.content));
+    }
 
     const usage = responseJson.usage as { input_tokens: number; output_tokens: number } | undefined;
     const model = typeof responseJson.model === 'string' ? responseJson.model : undefined;

@@ -7,9 +7,10 @@ initTelemetry();
 import { serve } from '@hono/node-server';
 import { createApp } from './server';
 import { router } from './routing/config';
+import { middlewares } from './middleware/config';
 
 const port = parseInt(process.env.PORT ?? '3000', 10);
-const app = createApp({ router });
+const app = createApp({ router, middlewares });
 
 serve({ fetch: (req) => app.fetch(req), port }, () => {
   console.log(`llm-gateway listening on :${port}`);

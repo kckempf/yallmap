@@ -192,6 +192,87 @@ describe('handleResponse — non-streaming', () => {
   });
 });
 
+describe('handleResponse — content capture', () => {
+  let span: ReturnType<typeof makeSpan>;
+
+  const MESSAGES = [{ role: 'user', content: 'Hello' }];
+  const BODY_WITH_MESSAGES = { model: 'claude-sonnet-4-6', messages: MESSAGES };
+
+  beforeEach(() => { span = makeSpan(); });
+
+  it('does not set gen_ai.prompt by default', async () => {
+    await handleResponse(
+      mockUpstream(200, NON_STREAMING_RESPONSE) as never,
+      PROVIDER, span as never, BODY_WITH_MESSAGES, false
+    );
+    const promptCall = span.setAttribute.mock.calls.find(([k]) => k === 'gen_ai.prompt');
+    expect(promptCall).toBeUndefined();
+  });
+
+  it('sets gen_ai.prompt when captureContent=true', async () => {
+    await handleResponse(
+      mockUpstream(200, NON_STREAMING_RESPONSE) as never,
+      PROVIDER, span as never, BODY_WITH_MESSAGES, false, undefined, true
+    );
+    const promptCall = span.setAttribute.mock.calls.find(([k]) => k === 'gen_ai.prompt');
+    expect(promptCall).toBeDefined();
+    expect(JSON.parse(promptCall![1])).toEqual(MESSAGES);
+  });
+
+  it('prepends system message when present', async () => {
+    const bodyWithSystem = { ...BODY_WITH_MESSAGES, system: 'You are helpful.' };
+    await handleResponse(
+      mockUpstream(200, NON_STREAMING_RESPONSE) as never,
+      PROVIDER, span as never, bodyWithSystem, false, undefined, true
+    );
+    const promptCall = span.setAttribute.mock.calls.find(([k]) => k === 'gen_ai.prompt');
+    const prompt = JSON.parse(promptCall![1]);
+    expect(prompt[0]).toEqual({ role: 'system', content: 'You are helpful.' });
+    expect(prompt[1]).toEqual(MESSAGES[0]);
+  });
+
+  it('sets gen_ai.completion for non-streaming when captureContent=true', async () => {
+    await handleResponse(
+      mockUpstream(200, NON_STREAMING_RESPONSE) as never,
+      PROVIDER, span as never, BODY_WITH_MESSAGES, false, undefined, true
+    );
+    const completionCall = span.setAttribute.mock.calls.find(([k]) => k === 'gen_ai.completion');
+    expect(completionCall).toBeDefined();
+    const completion = JSON.parse(completionCall![1]);
+    expect(completion).toEqual([{ type: 'text', text: 'Hi there' }]);
+  });
+
+  it('does not set gen_ai.completion for non-streaming by default', async () => {
+    await handleResponse(
+      mockUpstream(200, NON_STREAMING_RESPONSE) as never,
+      PROVIDER, span as never, BODY_WITH_MESSAGES, false
+    );
+    const completionCall = span.setAttribute.mock.calls.find(([k]) => k === 'gen_ai.completion');
+    expect(completionCall).toBeUndefined();
+  });
+
+  it('sets gen_ai.completion for streaming when captureContent=true', async () => {
+    const SSE = [
+      `event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":5,"output_tokens":1}}}\n\n`,
+      `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n`,
+      `event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}\n\n`,
+      `event: message_stop\ndata: {"type":"message_stop"}\n\n`,
+    ];
+    const res = await handleResponse(
+      mockSSEUpstream(SSE) as never,
+      PROVIDER, span as never, BODY_WITH_MESSAGES, true, undefined, true
+    );
+    await res.text(); // drain stream so onComplete fires
+    // streaming: gen_ai.completion is included in the setAttributes batch call
+    const attrsCall = span.setAttributes.mock.calls.find(
+      ([attrs]) => 'gen_ai.completion' in attrs
+    );
+    expect(attrsCall).toBeDefined();
+    const completion = JSON.parse((attrsCall![0] as Record<string, string>)['gen_ai.completion']);
+    expect(completion).toEqual([{ type: 'text', text: 'Hello' }]);
+  });
+});
+
 describe('handleResponse — streaming', () => {
   let span: ReturnType<typeof makeSpan>;
 

@@ -4,10 +4,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { SseCapture, type GenAiAttrs } from './sse-capture';
 
 // Pipe one or more string chunks through SseCapture, collect output and attrs
-async function pipe(input: string | string[]): Promise<{ output: string; attrs: GenAiAttrs }> {
+async function pipe(
+  input: string | string[],
+  captureContent = false,
+): Promise<{ output: string; attrs: GenAiAttrs }> {
   const chunks = (Array.isArray(input) ? input : [input]).map((s) => Buffer.from(s));
   let attrs: GenAiAttrs = {};
-  const capture = new SseCapture((a) => { attrs = a; });
+  const capture = new SseCapture((a) => { attrs = a; }, captureContent);
   const out: Buffer[] = [];
   await pipeline(
     Readable.from(chunks),
@@ -160,6 +163,35 @@ describe('SseCapture', () => {
     it('ignores a ping event', async () => {
       const { attrs } = await pipe(PING + MESSAGE_START());
       expect(attrs['gen_ai.response.model']).toBe('claude-sonnet-4-6');
+    });
+  });
+
+  describe('content capture (captureContent=true)', () => {
+    it('gen_ai.completion is absent by default', async () => {
+      const input = MESSAGE_START() + CONTENT_DELTA('Hello') + MESSAGE_DELTA() + MESSAGE_STOP;
+      const { attrs } = await pipe(input);
+      expect(attrs['gen_ai.completion']).toBeUndefined();
+    });
+
+    it('captures accumulated text as gen_ai.completion', async () => {
+      const input = MESSAGE_START() + CONTENT_DELTA('Hello') + CONTENT_DELTA(', world') + MESSAGE_DELTA() + MESSAGE_STOP;
+      const { attrs } = await pipe(input, true);
+      const completion = JSON.parse(attrs['gen_ai.completion']!);
+      expect(completion).toEqual([{ type: 'text', text: 'Hello, world' }]);
+    });
+
+    it('gen_ai.completion is absent when no text deltas arrive', async () => {
+      const { attrs } = await pipe(MESSAGE_START() + MESSAGE_DELTA(), true);
+      expect(attrs['gen_ai.completion']).toBeUndefined();
+    });
+
+    it('still captures all standard attrs alongside content', async () => {
+      const input = MESSAGE_START('claude-sonnet-4-6', 10) + CONTENT_DELTA('Hi') + MESSAGE_DELTA(5, 'end_turn');
+      const { attrs } = await pipe(input, true);
+      expect(attrs['gen_ai.response.model']).toBe('claude-sonnet-4-6');
+      expect(attrs['gen_ai.usage.input_tokens']).toBe(10);
+      expect(attrs['gen_ai.usage.output_tokens']).toBe(5);
+      expect(JSON.parse(attrs['gen_ai.completion']!)[0].text).toBe('Hi');
     });
   });
 

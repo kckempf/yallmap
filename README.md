@@ -10,9 +10,8 @@ without changing any client code.
 
 ## Status
 
-**v0.5** — Formalized `ProviderAdapter` interface; adding a new LLM provider is now a single file.
-Agent session groundwork: W3C trace context propagation and `x-session-id` header for correlating
-multi-call agent runs in Langfuse.
+**v0.6** — Compile-time middleware chain (`costGuard`, `rateLimit`, `piiRedactor`). Opt-in content
+capture: set `CAPTURE_CONTENT=true` to record input messages and output in Langfuse traces.
 
 ## How it works
 
@@ -86,6 +85,47 @@ ANTHROPIC_BASE_URL=http://localhost:3001 claude
 ```
 
 Or export it in your shell profile to make it permanent.
+
+## Middleware
+
+Middleware runs before every upstream call. It can inspect or modify the request, reject
+it early, or observe the response. Middleware is configured in `src/middleware/config.ts`.
+
+```typescript
+import { costGuard, rateLimit, piiRedactor } from './index';
+
+export const middlewares: MiddlewareFn[] = [
+  costGuard(0.10),                              // reject if worst-case cost > $0.10
+  rateLimit({ requests: 100, windowMs: 60_000 }),  // 100 req/min per API key
+  piiRedactor([/\b\d{3}-\d{2}-\d{4}\b/g]),     // redact SSNs from messages
+];
+```
+
+### Built-in middleware
+
+| Factory | Description |
+|---|---|
+| `costGuard(limitUsd)` | Rejects with 429 when worst-case cost (model × max_tokens) exceeds `limitUsd`. Uses the built-in pricing table; unknown models pass through. |
+| `rateLimit({ requests, windowMs, keyFn? })` | In-memory fixed-window counter. Keys on `x-api-key` by default; override with `keyFn`. |
+| `piiRedactor(patterns, replacement?)` | Regex-replaces matches in message `text` content blocks before forwarding. |
+
+### Writing custom middleware
+
+Middleware is a `(ctx, next) => Promise<Response>` function:
+
+```typescript
+import type { MiddlewareFn } from './types';
+
+const myMiddleware: MiddlewareFn = async (ctx, next) => {
+  // inspect: ctx.model, ctx.maxTokens, ctx.body, ctx.clientHeaders
+  if (ctx.model.startsWith('claude-opus')) {
+    return new Response(JSON.stringify({ type: 'error', error: { type: 'forbidden', message: 'Opus not allowed' } }), {
+      status: 403, headers: { 'content-type': 'application/json' },
+    });
+  }
+  return next();  // or: const res = await next(); then inspect res
+};
+```
 
 ## Routing
 
@@ -182,6 +222,7 @@ with `pino-pretty` for readability.
 | Variable | Default | Description |
 |---|---|---|
 | `LOG_LEVEL` | `info` | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `fatal` |
+| `CAPTURE_CONTENT` | _(unset)_ | Set to `true` to record prompt and completion in Langfuse traces (`gen_ai.prompt` / `gen_ai.completion` span attributes). Off by default — message content stays out of telemetry. |
 
 ## Cost tracking
 
@@ -290,7 +331,8 @@ to the client.
 - [x] v0.3 — cost tracking, exponential retry with backoff, structured pino logging
 - [x] v0.4 — CDK construct for ECS Fargate deployment ([cdk-llm-gateway](https://github.com/kevinkempf/cdk-llm-gateway))
 - [x] v0.5 — formalized `ProviderAdapter` interface; drop-in provider plugins; agent session groundwork (`x-session-id`, W3C trace context)
-- [ ] v0.6 — compile-time middleware chain (cost guards, rate limiting, PII redaction)
+- [x] v0.6 — compile-time middleware chain (`costGuard`, `rateLimit`, `piiRedactor`; custom middleware support)
+- [ ] v0.7 — TBD
 
 ## License
 
