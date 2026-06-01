@@ -1,17 +1,11 @@
-import type { Transform } from 'node:stream';
-import { ollamaAdapter } from '../adapters/ollama';
+import { anthropicAdapter, ollamaAdapter, type ProviderAdapter } from '../adapters';
 
-export interface Adapter {
-  path: string;
-  translateRequest(body: Record<string, unknown>): Record<string, unknown>;
-  translateResponse(body: Record<string, unknown>): Record<string, unknown>;
-  createStreamTranslator(): Transform;
-}
+export type { ProviderAdapter };
 
 export interface Provider {
   name: string;
   baseUrl: string;
-  adapter?: Adapter;
+  adapter: ProviderAdapter;
 }
 
 export interface RequestContext {
@@ -25,6 +19,7 @@ export type Router = (ctx: RequestContext) => Provider[];
 export const anthropic: Provider = {
   name: 'anthropic',
   baseUrl: (process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com').replace(/\/$/, ''),
+  adapter: anthropicAdapter,
 };
 
 export const ollama: Provider = {
@@ -54,4 +49,3 @@ export function firstMatch(rules: Rule[], fallback: Provider = anthropic): Route
     return [fallback];
   };
 }
-

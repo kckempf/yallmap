@@ -10,7 +10,7 @@ without changing any client code.
 
 ## Status
 
-**v0.3** — Cost tracking, exponential retry with backoff, structured pino logging.
+**v0.5** — Formalized `ProviderAdapter` interface; adding a new LLM provider is now a single file.
 
 ## How it works
 
@@ -36,7 +36,7 @@ and Ollama's OpenAI-compatible API — the client always speaks Anthropic.
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - A running [Langfuse](https://langfuse.com/docs/deployment/self-host) instance
   (Docker Compose quickstart: `docker-compose up -d` from the Langfuse repo)
 - [Ollama](https://ollama.ai) (optional — only needed for `ollama/*` model routing)
@@ -187,7 +187,49 @@ Each request produces a `gen_ai.request` span with:
 `gen_ai.system` reflects the provider that actually handled the request — useful for
 distinguishing local vs. cloud inference in Langfuse dashboards.
 
+## Docker
+
+```bash
+docker build -t llm-gateway .
+docker run -p 3001:3001 \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:3000/api/public/otel/v1/traces \
+  -e LANGFUSE_PUBLIC_KEY=pk-lf-... \
+  -e LANGFUSE_SECRET_KEY=sk-lf-... \
+  llm-gateway
+```
+
+The multi-stage Dockerfile builds in `node:22-alpine`, copies only compiled output into
+the final image. No dev dependencies or TypeScript source in the production image.
+
+For AWS deployment, see the companion CDK construct:
+[cdk-llm-gateway](https://github.com/kevinkempf/cdk-llm-gateway).
+
+## Adding a provider
+
+Implement `ProviderAdapter` from `src/adapters/types.ts`:
+
+```typescript
+// src/adapters/my-provider.ts
+import type { ProviderAdapter } from './types';
+
+export const myProviderAdapter: ProviderAdapter = {
+  path: '/v1/chat/completions',           // upstream path
+  translateRequest: (body) => { /* ... */ return translated; },
+  translateResponse: (body) => { /* ... */ return translated; },
+  createStreamTranslator: () => new MyStreamTransform(),
+};
+```
+
+Then add a `Provider` entry in `src/routing/index.ts` and reference it in
+`src/routing/config.ts`. The existing Ollama adapter is the reference implementation.
+
 ## Design decisions
+
+**Provider adapters as a formal interface.** `ProviderAdapter` defines the three
+translation surfaces — request body, response body, SSE stream — so new providers are
+drop-in files with no changes to the router or proxy. The `anthropicAdapter` is an
+identity pass-through; the `ollamaAdapter` is the reference implementation of a full
+translation.
 
 **Routing policies as TypeScript functions.** Rules are typed predicates — `whenModel`,
 `chain`, `firstMatch`. No YAML DSL, no CEL expressions. Adding a rule is adding a line
@@ -214,7 +256,9 @@ to the client.
 - [x] v0.1 — transparent Anthropic proxy + OTel observability
 - [x] v0.2 — TypeScript routing policies, Ollama adapter, fallback chains
 - [x] v0.3 — cost tracking, exponential retry with backoff, structured pino logging
-- [ ] v0.4 — CDK constructs for AWS deployment
+- [x] v0.4 — CDK construct for ECS Fargate deployment ([cdk-llm-gateway](https://github.com/kevinkempf/cdk-llm-gateway))
+- [x] v0.5 — formalized `ProviderAdapter` interface; drop-in provider plugins
+- [ ] v0.6 — compile-time middleware chain (cost guards, rate limiting, PII redaction)
 
 ## License
 

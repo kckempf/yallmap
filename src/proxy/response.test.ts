@@ -1,7 +1,7 @@
 import { Readable, PassThrough } from 'node:stream';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
-import type { Adapter } from '../routing';
+import { anthropicAdapter, type ProviderAdapter } from '../adapters';
 
 function makeSpan() {
   return {
@@ -43,7 +43,7 @@ const NON_STREAMING_RESPONSE = JSON.stringify({
   usage: { input_tokens: 10, output_tokens: 5 },
 });
 
-const PROVIDER = { name: 'anthropic', baseUrl: 'https://api.anthropic.com' };
+const PROVIDER = { name: 'anthropic', baseUrl: 'https://api.anthropic.com', adapter: anthropicAdapter };
 const STREAMING_BODY = JSON.stringify({ model: 'claude-sonnet-4-6', messages: [] });
 
 vi.mock('@opentelemetry/api', () => ({
@@ -150,7 +150,7 @@ describe('handleResponse — non-streaming', () => {
   });
 
   describe('adapter translation', () => {
-    function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
+    function makeAdapter(overrides: Partial<ProviderAdapter> = {}): ProviderAdapter {
       return {
         path: '/v2/translated',
         translateRequest: (b) => b,

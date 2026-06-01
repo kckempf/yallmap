@@ -1,6 +1,7 @@
 import { Transform } from 'node:stream';
+import type { ProviderAdapter } from './types';
 
-export const path = '/v1/chat/completions';
+const path = '/v1/chat/completions';
 
 type OAIMessage = Record<string, unknown>;
 
@@ -298,4 +299,4 @@ export function createStreamTranslator(): Transform {
   });
 }
 
-export const ollamaAdapter = { path, translateRequest, translateResponse, createStreamTranslator };
+export const ollamaAdapter: ProviderAdapter = { path, translateRequest, translateResponse, createStreamTranslator };

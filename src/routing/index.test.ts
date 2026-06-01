@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { firstMatch, whenModel, chain, type Provider, type RequestContext } from './index';
+import { anthropicAdapter } from '../adapters';
 
-const ANTHROPIC: Provider = { name: 'anthropic', baseUrl: 'https://api.anthropic.com' };
-const OLLAMA: Provider = { name: 'ollama', baseUrl: 'http://localhost:11434' };
-const BACKUP: Provider = { name: 'backup', baseUrl: 'http://backup:11434' };
+const ANTHROPIC: Provider = { name: 'anthropic', baseUrl: 'https://api.anthropic.com', adapter: anthropicAdapter };
+const OLLAMA: Provider = { name: 'ollama', baseUrl: 'http://localhost:11434', adapter: anthropicAdapter };
+const BACKUP: Provider = { name: 'backup', baseUrl: 'http://backup:11434', adapter: anthropicAdapter };
 
 const ctx = (model: string, stream = false): RequestContext => ({ model, stream });
 

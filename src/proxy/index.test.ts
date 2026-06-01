@@ -5,7 +5,8 @@ vi.mock('undici', () => ({ request: vi.fn() }));
 
 import { request } from 'undici';
 import { createApp } from '../server';
-import type { Adapter, Provider, Router } from '../routing';
+import type { ProviderAdapter, Provider, Router } from '../routing';
+import { anthropicAdapter } from '../adapters';
 
 const mockRequest = vi.mocked(request);
 
@@ -273,7 +274,7 @@ describe('POST /v1/messages', () => {
   });
 
   describe('provider routing', () => {
-    const makeProvider = (name: string, baseUrl: string): Provider => ({ name, baseUrl });
+    const makeProvider = (name: string, baseUrl: string): Provider => ({ name, baseUrl, adapter: anthropicAdapter });
 
     it('uses the URL returned by the router', async () => {
       const customProvider = makeProvider('custom', 'https://custom.example.com');
@@ -342,7 +343,7 @@ describe('POST /v1/messages', () => {
   });
 
   describe('fallback chains', () => {
-    const makeProvider = (name: string, baseUrl: string): Provider => ({ name, baseUrl });
+    const makeProvider = (name: string, baseUrl: string): Provider => ({ name, baseUrl, adapter: anthropicAdapter });
     // Disable retries for fallback tests — retry behaviour is tested separately
     const noRetry = { maxRetries: 0, baseDelayMs: 0, retryOn: () => false };
 
@@ -456,7 +457,7 @@ describe('POST /v1/messages', () => {
   });
 
   describe('adapter integration', () => {
-    function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
+    function makeAdapter(overrides: Partial<ProviderAdapter> = {}): ProviderAdapter {
       return {
         path: '/v2/translated',
         translateRequest: (body) => ({ ...body, _translated: true }),
@@ -476,7 +477,7 @@ describe('POST /v1/messages', () => {
       };
     }
 
-    function providerWithAdapter(adapter: Adapter): Provider {
+    function providerWithAdapter(adapter: ProviderAdapter): Provider {
       return { name: 'test', baseUrl: 'https://test.example.com', adapter };
     }
 
@@ -530,20 +531,20 @@ describe('POST /v1/messages', () => {
         expect(forwarded['content-length']).toBe(String(sentBody.byteLength));
       });
 
-      it('sends original body when no adapter is present', async () => {
-        app = createApp({ router: () => [{ name: 'anthropic', baseUrl: 'https://api.anthropic.com' }] });
+      it('anthropicAdapter is identity — body reaches upstream untranslated', async () => {
+        app = createApp({ router: () => [{ name: 'anthropic', baseUrl: 'https://api.anthropic.com', adapter: anthropicAdapter }] });
         mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
-        const originalBody = JSON.stringify(BASE_REQUEST);
 
         await app.request('/v1/messages', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: originalBody,
+          body: JSON.stringify(BASE_REQUEST),
         });
 
         const [, options] = mockRequest.mock.calls[0] as [unknown, Record<string, unknown>];
         const sentBody = JSON.parse((options.body as Buffer).toString('utf8'));
         expect(sentBody._translated).toBeUndefined();
+        expect(sentBody.model).toBe(BASE_REQUEST.model);
       });
     });
 
@@ -660,7 +661,7 @@ describe('retry behaviour', () => {
 
   beforeEach(() => { vi.clearAllMocks(); });
 
-  const makeProvider = (name: string, baseUrl: string) => ({ name, baseUrl });
+  const makeProvider = (name: string, baseUrl: string): Provider => ({ name, baseUrl, adapter: anthropicAdapter });
 
   it('retries the same provider on 429 and succeeds on next attempt', async () => {
     const router = () => [makeProvider('anthropic', 'https://api.anthropic.com')];

@@ -51,11 +51,7 @@ export async function handleResponse(
       span.end();
     };
 
-    if (adapter) {
-      pipeline(upstream.body, adapter.createStreamTranslator(), capture, passthrough).catch(handlePipelineError);
-    } else {
-      pipeline(upstream.body, capture, passthrough).catch(handlePipelineError);
-    }
+    pipeline(upstream.body, adapter.createStreamTranslator(), capture, passthrough).catch(handlePipelineError);
 
     return new Response(Readable.toWeb(passthrough) as ReadableStream, {
       status: upstream.statusCode,
@@ -68,13 +64,11 @@ export async function handleResponse(
   for await (const chunk of upstream.body) responseChunks.push(chunk as Buffer);
   let responseBody = Buffer.concat(responseChunks);
 
-  if (adapter) {
-    try {
-      const translated = adapter.translateResponse(JSON.parse(responseBody.toString('utf8')));
-      responseBody = Buffer.from(JSON.stringify(translated));
-      responseHeaders.set('content-length', String(responseBody.byteLength));
-    } catch { /* best-effort; fall through with original body */ }
-  }
+  try {
+    const translated = adapter.translateResponse(JSON.parse(responseBody.toString('utf8')));
+    responseBody = Buffer.from(JSON.stringify(translated));
+    responseHeaders.set('content-length', String(responseBody.byteLength));
+  } catch { /* best-effort; fall through with original body */ }
 
   try {
     const responseJson = JSON.parse(responseBody.toString('utf8')) as Record<string, unknown>;

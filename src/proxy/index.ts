@@ -55,10 +55,8 @@ export async function proxyMessages(
     const provider = providers[i];
     const hasNext = i < providers.length - 1;
     const { adapter } = provider;
-    const upstreamPath = adapter ? adapter.path : '/v1/messages';
-    const upstreamBody = adapter
-      ? Buffer.from(JSON.stringify(adapter.translateRequest(parsedBody)))
-      : rawBody;
+    const upstreamPath = adapter.path;
+    const upstreamBody = Buffer.from(JSON.stringify(adapter.translateRequest(parsedBody)));
 
     const upstreamHeaders = {
       ...clientHeaders,
