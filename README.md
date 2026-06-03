@@ -1,21 +1,49 @@
 # llm-gateway
 
-A TypeScript gateway that sits between your LLM clients and Anthropic (or Ollama), emitting
-[OpenTelemetry Gen AI](https://opentelemetry.io/docs/specs/semconv/gen-ai/) traces
-to a self-hosted [Langfuse](https://langfuse.com) instance.
+![CI](https://github.com/kevinkempf/llm-gateway/actions/workflows/ci.yml/badge.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Node](https://img.shields.io/badge/node-%3E%3D20-blue)
 
-Primary use case: running [Claude Code](https://claude.ai/code) through the gateway via
-`ANTHROPIC_BASE_URL` to get per-request token tracking, latency, and model observability
-without changing any client code.
+An OpenTelemetry-instrumented gateway for Anthropic-compatible LLMs. Drop it in front
+of [Claude Code](https://claude.ai/code) or any Anthropic SDK client to get per-request
+token tracking, cost attribution, and latency observability in
+[Langfuse](https://langfuse.com) — no client changes required.
+
+Primary use case: running Claude Code through the gateway via `ANTHROPIC_BASE_URL` to
+get per-request token tracking, latency, and model observability without changing any
+client code.
+
+## Try it in 60 seconds
+
+```bash
+git clone https://github.com/kevinkempf/llm-gateway && cd llm-gateway
+npm install
+npm run dev                          # starts on :3001
+
+# in another shell:
+ANTHROPIC_BASE_URL=http://localhost:3001 claude
+```
+
+Langfuse is **optional** — the gateway works without it; you just lose the telemetry
+half. The telemetry exporter warns on startup if `OTEL_EXPORTER_OTLP_ENDPOINT` is unset,
+then continues running normally.
 
 ## Status
 
-**v0.6** — Compile-time middleware chain (`costGuard`, `rateLimit`, `piiRedactor`). Opt-in content
-capture: set `CAPTURE_CONTENT=true` to record input messages and output in Langfuse traces.
+**v0.7** — Multi-key authentication (`apiKeyAuth`) with per-key identity propagated
+into rate-limit keys, structured logs, and Langfuse `user.id` span attributes. Request
+body-size limit (`MAX_BODY_BYTES`, default 4 MB) returning 413 before allocation.
+Retry hardening: `Retry-After` is now clamped to `RETRY_AFTER_MAX_MS` (default 5 min)
+instead of being discarded above 60 s, and backoff switched to equal-jitter so retries
+can no longer fire back-to-back. Runtime version centralized in `src/version.ts` so
+`/health`, OTel resource attributes, and the tracer instrumentation version all track
+`package.json`. Plus OSS publication scaffolding: `LICENSE`, `CONTRIBUTING.md`,
+`CODE_OF_CONDUCT.md`, `SECURITY.md`, `CHANGELOG.md`, GitHub issue/PR templates,
+Dependabot, and a CI workflow.
 
 ## How it works
 
-```
+```text
 Claude Code ──► llm-gateway :3001 ──► api.anthropic.com
                      │          └───► Ollama (ollama/* models)
                      │
@@ -86,6 +114,51 @@ ANTHROPIC_BASE_URL=http://localhost:3001 claude
 
 Or export it in your shell profile to make it permanent.
 
+## Authentication
+
+The gateway supports a multi-key allowlist with per-key identity. Configure clients
+via the `GATEWAY_API_KEYS` environment variable as comma-separated `label:secret`
+pairs:
+
+```env
+GATEWAY_API_KEYS=alice:abc123,bob:def456,ci:ghj789
+```
+
+Clients send their secret in the `x-gateway-key` header (separate from Anthropic's
+`x-api-key`, which is forwarded upstream untouched):
+
+```bash
+curl -X POST http://localhost:3001/v1/messages \
+  -H 'x-gateway-key: abc123' \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+From the Anthropic SDK, pass the header via `defaultHeaders`:
+
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = new Anthropic({
+  baseURL: 'http://localhost:3001',
+  defaultHeaders: { 'x-gateway-key': process.env.GATEWAY_KEY },
+});
+```
+
+The authenticated `keyId` (the label half of the pair) propagates downstream:
+
+- **Request logs** — appears as `keyId` in the structured JSON log line.
+- **Rate limiting** — the default `rateLimit` keys on `keyId` when set.
+- **Langfuse traces** — emitted as the `user.id` span attribute, surfaced as the
+  user filter in the Langfuse UI.
+
+When `GATEWAY_API_KEYS` is unset, the gateway runs **unauthenticated**. This keeps
+the 60-second quickstart frictionless but is unsafe for any deployment with a
+public endpoint. A warning is logged on startup if `NODE_ENV=production` and no
+keys are configured.
+
 ## Middleware
 
 Middleware runs before every upstream call. It can inspect or modify the request, reject
@@ -104,9 +177,10 @@ export const middlewares: MiddlewareFn[] = [
 ### Built-in middleware
 
 | Factory | Description |
-|---|---|
+| --- | --- |
 | `costGuard(limitUsd)` | Rejects with 429 when worst-case cost (model × max_tokens) exceeds `limitUsd`. Uses the built-in pricing table; unknown models pass through. |
-| `rateLimit({ requests, windowMs, keyFn? })` | In-memory fixed-window counter. Keys on `x-api-key` by default; override with `keyFn`. |
+| `apiKeyAuth({ keys, headerName? })` | Allowlist authentication. Rejects with 401 if `x-gateway-key` is missing or unknown. On success, sets `ctx.auth.keyId` for downstream middleware. See [Authentication](#authentication). |
+| `rateLimit({ requests, windowMs, keyFn? })` | In-memory fixed-window counter. Keys on `ctx.auth.keyId` when present, otherwise `x-api-key`. Override with `keyFn`. **State is per-process and resets on restart — do not deploy behind a load balancer without a shared store.** |
 | `piiRedactor(patterns, replacement?)` | Regex-replaces matches in message `text` content blocks before forwarding. |
 
 ### Writing custom middleware
@@ -144,7 +218,7 @@ export const router = firstMatch([
 ### Helpers
 
 | Helper | Description |
-|---|---|
+| --- | --- |
 | `whenModel(pattern, provider)` | Match on model name (string or regex) |
 | `chain(p1, p2, ...)` | Try providers left-to-right; fall back on 5xx or network error |
 | `firstMatch(rules, fallback?)` | Evaluate rules top-to-bottom; first match wins |
@@ -152,6 +226,7 @@ export const router = firstMatch([
 ### Fallback behaviour
 
 When a provider list is returned (via `chain`), the proxy tries each in order:
+
 - **429 / 503 / 529** — retry the same provider with exponential backoff (see [Retries](#retries))
 - **Other 5xx** — drain the body, try the next provider immediately
 - **Network error** — try the next provider immediately
@@ -199,7 +274,7 @@ overloaded) on the same provider before falling back to the next one.
 **Environment variables:**
 
 | Variable | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `MAX_RETRIES` | `3` | Per-provider retry attempts |
 | `RETRY_BASE_DELAY_MS` | `1000` | Base delay for backoff (ms) |
 
@@ -220,7 +295,7 @@ with `pino-pretty` for readability.
 **Environment variables:**
 
 | Variable | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `LOG_LEVEL` | `info` | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `fatal` |
 | `CAPTURE_CONTENT` | _(unset)_ | Set to `true` to record prompt and completion in Langfuse traces (`gen_ai.prompt` / `gen_ai.completion` span attributes). Off by default — message content stays out of telemetry. |
 
@@ -244,10 +319,12 @@ Monday and opens a PR when prices change.
 
 ## What you see in Langfuse
 
+![Langfuse trace](docs/langfuse-trace.png)
+
 Each request produces a `gen_ai.request` span with:
 
 | Attribute | Example |
-|---|---|
+| --- | --- |
 | `gen_ai.system` | `anthropic` or `ollama` |
 | `gen_ai.request.model` | `claude-sonnet-4-6` |
 | `gen_ai.request.max_tokens` | `32000` |
@@ -256,6 +333,8 @@ Each request produces a `gen_ai.request` span with:
 | `gen_ai.usage.output_tokens` | `13` |
 | `gen_ai.usage.cost_usd` | `0.000224` |
 | `gen_ai.response.finish_reasons` | `["end_turn"]` |
+| `gen_ai.prompt` | `[{"role":"user","content":"Hello"}]` _(opt-in: `CAPTURE_CONTENT=true`)_ |
+| `gen_ai.completion` | `[{"type":"text","text":"Hi there"}]` _(opt-in: `CAPTURE_CONTENT=true`)_ |
 
 `gen_ai.system` reflects the provider that actually handled the request — useful for
 distinguishing local vs. cloud inference in Langfuse dashboards.
@@ -324,6 +403,12 @@ so traces are interoperable with any OTel-compatible backend, not just Langfuse.
 for telemetry. The gateway requests uncompressed from upstream and forwards uncompressed
 to the client.
 
+**Middleware as a compile-time chain.** Middleware is a list of typed
+`(ctx, next) => Promise<Response>` functions composed at startup. Each function either
+calls `next()` to continue or returns its own Response to short-circuit. This keeps the
+proxy loop clean — policy decisions (cost guards, rate limiting, PII redaction) live
+outside the retry/fallback logic and are trivially testable in isolation.
+
 ## Roadmap
 
 - [x] v0.1 — transparent Anthropic proxy + OTel observability
@@ -331,8 +416,9 @@ to the client.
 - [x] v0.3 — cost tracking, exponential retry with backoff, structured pino logging
 - [x] v0.4 — CDK construct for ECS Fargate deployment ([cdk-llm-gateway](https://github.com/kevinkempf/cdk-llm-gateway))
 - [x] v0.5 — formalized `ProviderAdapter` interface; drop-in provider plugins; agent session groundwork (`x-session-id`, W3C trace context)
-- [x] v0.6 — compile-time middleware chain (`costGuard`, `rateLimit`, `piiRedactor`; custom middleware support)
-- [ ] v0.7 — TBD
+- [x] v0.6 — compile-time middleware chain (`costGuard`, `rateLimit`, `piiRedactor`; custom middleware support); opt-in content capture (`CAPTURE_CONTENT`)
+- [x] v0.7 — multi-key auth (`apiKeyAuth`) with identity propagation to rate limit, logs, and Langfuse `user.id`; request body-size limit; clamped `Retry-After` + equal-jitter backoff; OSS publication scaffolding (LICENSE, CONTRIBUTING, CI, Dependabot)
+- [ ] v0.8 — TBD (candidates: persistent rate-limit state, per-key cost budgets, graceful shutdown)
 
 ## License
 

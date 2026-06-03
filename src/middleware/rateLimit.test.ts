@@ -93,4 +93,24 @@ describe('rateLimit', () => {
     const res = await limiter(ctx, next);
     expect(res.status).toBe(429);
   });
+
+  it('prefers ctx.auth.keyId over x-api-key when both are present', async () => {
+    const limiter = rateLimit({ requests: 1, windowMs: 60_000 });
+    // Two requests with same auth.keyId but different x-api-key should still share a bucket
+    const ctx1: MiddlewareContext = { ...makeCtx('key-a'), auth: { keyId: 'alice' } };
+    const ctx2: MiddlewareContext = { ...makeCtx('key-b'), auth: { keyId: 'alice' } };
+
+    await limiter(ctx1, next);
+    const res = await limiter(ctx2, next);
+    expect(res.status).toBe(429);
+  });
+
+  it('falls back to x-api-key when ctx.auth is absent', async () => {
+    const limiter = rateLimit({ requests: 1, windowMs: 60_000 });
+    const ctx = makeCtx('shared-key');
+
+    await limiter(ctx, next);
+    const res = await limiter(ctx, next);
+    expect(res.status).toBe(429);
+  });
 });

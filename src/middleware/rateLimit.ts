@@ -10,7 +10,9 @@ export function rateLimit({ requests, windowMs, keyFn }: RateLimitOptions): Midd
   const windows = new Map<string, { count: number; resetAt: number }>();
 
   return async (ctx, next) => {
-    const key = keyFn ? keyFn(ctx) : (ctx.clientHeaders['x-api-key'] ?? 'global');
+    const key = keyFn
+      ? keyFn(ctx)
+      : (ctx.auth?.keyId ?? ctx.clientHeaders['x-api-key'] ?? 'global');
     const now = Date.now();
     let win = windows.get(key);
     if (!win || now >= win.resetAt) {

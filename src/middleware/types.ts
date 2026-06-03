@@ -1,3 +1,7 @@
+export interface AuthIdentity {
+  readonly keyId: string;
+}
+
 export interface MiddlewareContext {
   readonly requestId: string;
   readonly model: string;
@@ -5,6 +9,7 @@ export interface MiddlewareContext {
   readonly maxTokens: number | undefined;
   body: Record<string, unknown>;
   readonly clientHeaders: Readonly<Record<string, string>>;
+  auth?: AuthIdentity;
 }
 
 export type NextFn = () => Promise<Response>;

@@ -8,6 +8,7 @@ import type { RetryOptions } from './retry';
 import { logger } from '../logger';
 import { compose } from '../middleware/compose';
 import type { MiddlewareFn, MiddlewareContext } from '../middleware/types';
+import { version } from '../version';
 
 const FALLBACK_ROUTER = firstMatch([]);
 const CAPTURE_CONTENT = process.env.CAPTURE_CONTENT === 'true';
@@ -60,9 +61,10 @@ export async function proxyMessages(
   };
 
   const runProxy = async (): Promise<Response> => {
+    if (ctx.auth?.keyId) c.set('keyId' as never, ctx.auth.keyId as never);
     const providers = router({ model: ctx.model, stream: ctx.isStreaming });
 
-    const tracer = trace.getTracer('llm-gateway', '0.1.0');
+    const tracer = trace.getTracer('llm-gateway', version);
     const span = tracer.startSpan('gen_ai.request', {
       kind: SpanKind.CLIENT,
       attributes: {
@@ -72,6 +74,7 @@ export async function proxyMessages(
     }, parentCtx);
 
     if (sessionId) span.setAttribute('session.id', sessionId);
+    if (ctx.auth?.keyId) span.setAttribute('user.id', ctx.auth.keyId);
 
     let lastError: unknown;
     const { maxRetries, baseDelayMs, retryOn } = retryOptions;

@@ -1,8 +1,14 @@
 {
   "name": "llm-gateway",
-  "version": "0.1.0",
+  "version": "0.7.0",
   "description": "Anthropic-native LLM gateway with Langfuse OTel observability",
   "private": true,
+  "license": "MIT",
+  "author": "Kevin Kempf",
+  "repository": { "type": "git", "url": "https://github.com/kevinkempf/llm-gateway" },
+  "homepage": "https://github.com/kevinkempf/llm-gateway#readme",
+  "bugs": { "url": "https://github.com/kevinkempf/llm-gateway/issues" },
+  "keywords": ["anthropic", "claude", "claude-code", "llm", "proxy", "gateway", "opentelemetry", "langfuse", "observability", "ollama"],
   "engines": {
     "node": ">=20"
   },

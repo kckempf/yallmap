@@ -813,13 +813,41 @@ describe('retry behaviour', () => {
 });
 
 describe('GET /health', () => {
-  it('returns 200 with status ok', async () => {
+  it('returns 200 with status ok and the package version', async () => {
     const app = createApp();
     const res = await app.request('/health');
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.status).toBe('ok');
-    expect(json.version).toBe('0.1.0');
+    // Read package.json version dynamically so this test doesn't go stale on every bump
+    const { version } = require('../../package.json');
+    expect(json.version).toBe(version);
+  });
+});
+
+describe('body size limit', () => {
+  it('returns 413 when content-length exceeds MAX_BODY_BYTES', async () => {
+    const app = createApp();
+    const huge = parseInt(process.env.MAX_BODY_BYTES ?? '4194304', 10) + 1;
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': String(huge) },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+    expect(res.status).toBe(413);
+    const json = await res.json();
+    expect(json.error.type).toBe('request_too_large');
+  });
+
+  it('passes through when content-length is under the limit', async () => {
+    const app = createApp();
+    mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+    expect(res.status).toBe(200);
   });
 });
 

@@ -1,30 +1,35 @@
 import { describe, it, expect } from 'vitest';
 import { backoffDelay, retryAfterDelay, defaultRetryOptions } from './retry';
 
-describe('backoffDelay', () => {
+describe('backoffDelay (equal jitter)', () => {
   const fixed = (n: number) => () => n;
 
-  it('returns 0 when random returns 0', () => {
-    expect(backoffDelay(0, 1000, fixed(0))).toBe(0);
+  it('returns half the exponential cap when random returns 0 (the floor)', () => {
+    // floor = base * 2^attempt / 2
+    expect(backoffDelay(0, 1000, fixed(0))).toBe(500);
+    expect(backoffDelay(1, 1000, fixed(0))).toBe(1000);
+    expect(backoffDelay(2, 1000, fixed(0))).toBe(2000);
   });
 
-  it('scales with attempt number (exponential)', () => {
-    // attempt 0: max = base * 2^0 = base
-    // attempt 1: max = base * 2^1 = 2*base
-    // attempt 2: max = base * 2^2 = 4*base
+  it('returns the full exponential cap when random returns 1', () => {
     expect(backoffDelay(0, 1000, fixed(1))).toBe(1000);
     expect(backoffDelay(1, 1000, fixed(1))).toBe(2000);
     expect(backoffDelay(2, 1000, fixed(1))).toBe(4000);
   });
 
-  it('applies full jitter via the random function', () => {
-    expect(backoffDelay(1, 1000, fixed(0.5))).toBe(1000);
+  it('jitters within [cap/2, cap]', () => {
+    expect(backoffDelay(1, 1000, fixed(0.5))).toBe(1500);
   });
 
-  it('uses Math.random by default (returns a number)', () => {
+  it('never waits less than the previous attempt (floor >= prev cap)', () => {
+    const prevMax = backoffDelay(1, 1000, fixed(1)); // 2000
+    const nextMin = backoffDelay(2, 1000, fixed(0)); // 2000
+    expect(nextMin).toBeGreaterThanOrEqual(prevMax);
+  });
+
+  it('uses Math.random by default and stays within [cap/2, cap]', () => {
     const delay = backoffDelay(0, 1000);
-    expect(typeof delay).toBe('number');
-    expect(delay).toBeGreaterThanOrEqual(0);
+    expect(delay).toBeGreaterThanOrEqual(500);
     expect(delay).toBeLessThanOrEqual(1000);
   });
 });
@@ -50,12 +55,16 @@ describe('retryAfterDelay', () => {
     expect(retryAfterDelay({ 'retry-after': '-1' })).toBeNull();
   });
 
-  it('returns null for values above 60 seconds', () => {
-    expect(retryAfterDelay({ 'retry-after': '61' })).toBeNull();
+  it('honors values above 60 seconds (no longer discarded)', () => {
+    expect(retryAfterDelay({ 'retry-after': '120' })).toBe(120000);
   });
 
-  it('returns delay for the maximum sane value (60s)', () => {
-    expect(retryAfterDelay({ 'retry-after': '60' })).toBe(60000);
+  it('clamps very large values to the max budget (default 300s)', () => {
+    expect(retryAfterDelay({ 'retry-after': '3600' })).toBe(300000);
+  });
+
+  it('respects a custom max cap', () => {
+    expect(retryAfterDelay({ 'retry-after': '120' }, 60000)).toBe(60000);
   });
 
   it('handles array header values (takes first)', () => {
