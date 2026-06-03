@@ -49,18 +49,20 @@ that fails on `main` and passes on the branch.
 
 ## How to add a provider adapter
 
-The cleanest reference is `src/providers/ollama.ts` plus its tests. The
-adapter interface (`src/providers/types.ts`) requires three things:
+The cleanest reference is `src/adapters/ollama.ts` plus its tests. The
+adapter interface (`src/adapters/types.ts`) requires four things:
 
 1. `path` — the upstream HTTP path the gateway POSTs to.
 2. `translateRequest(body)` — convert Anthropic-shaped requests to the
    upstream's schema. Return the body as-is if the upstream is already
    Anthropic-compatible.
-3. `translateResponse(...)` and `translateStreamChunk(...)` — convert
-   responses (and SSE chunks) back to Anthropic shape.
+3. `translateResponse(body)` — convert non-streaming JSON responses back
+   to the Anthropic shape.
+4. `createStreamTranslator()` — return a Node `Transform` stream that
+   converts the upstream's SSE events to Anthropic SSE chunk-by-chunk.
 
-Register the adapter in `src/routing.ts` or expose it as a factory so users
-can wire it up themselves. Tests should cover both streaming and
+Register the adapter in `src/routing/index.ts` and reference it from
+`src/routing/config.ts`. Tests should cover both streaming and
 non-streaming paths.
 
 ## How to add middleware

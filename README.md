@@ -65,7 +65,7 @@ and Ollama's OpenAI-compatible API — the client always speaks Anthropic.
 
 ## Prerequisites
 
-- Node.js 22+
+- Node.js 20+
 - A running [Langfuse](https://langfuse.com/docs/deployment/self-host) instance
   (Docker Compose quickstart: `docker-compose up -d` from the Langfuse repo)
 - [Ollama](https://ollama.ai) (optional — only needed for `ollama/*` model routing)
@@ -319,7 +319,7 @@ Monday and opens a PR when prices change.
 
 ## What you see in Langfuse
 
-![Langfuse trace](docs/langfuse-trace.png)
+![Langfuse trace](docs/langfuse-trace.png "Screenshot of a langfuse trace including Metadata attributes")
 
 Each request produces a `gen_ai.request` span with:
 
