@@ -376,7 +376,7 @@ The multi-stage Dockerfile builds in `node:22-alpine`, copies only compiled outp
 the final image. No dev dependencies or TypeScript source in the production image.
 
 For AWS deployment, see the companion CDK construct:
-[cdk-llm-gateway](https://github.com/kevinkempf/cdk-llm-gateway).
+[cdk-yallmap](https://github.com/kevinkempf/cdk-yallmap).
 
 ## Adding a provider
 
@@ -436,7 +436,7 @@ outside the retry/fallback logic and are trivially testable in isolation.
 - [x] v0.1 — transparent Anthropic proxy + OTel observability
 - [x] v0.2 — TypeScript routing policies, Ollama adapter, fallback chains
 - [x] v0.3 — cost tracking, exponential retry with backoff, structured pino logging
-- [x] v0.4 — CDK construct for ECS Fargate deployment ([cdk-llm-gateway](https://github.com/kevinkempf/cdk-llm-gateway))
+- [x] v0.4 — CDK construct for ECS Fargate deployment ([cdk-yallmap](https://github.com/kevinkempf/cdk-yallmap))
 - [x] v0.5 — formalized `ProviderAdapter` interface; drop-in provider plugins; agent session groundwork (`x-session-id`, W3C trace context)
 - [x] v0.6 — compile-time middleware chain (`costGuard`, `rateLimit`, `piiRedactor`; custom middleware support); opt-in content capture (`CAPTURE_CONTENT`)
 - [x] v0.7 — multi-key auth (`apiKeyAuth`) with identity propagation to rate limit, logs, and Langfuse `user.id`; request body-size limit; clamped `Retry-After` + equal-jitter backoff; OSS publication scaffolding (LICENSE, CONTRIBUTING, CI, Dependabot)

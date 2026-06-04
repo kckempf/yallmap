@@ -103,7 +103,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added for 0.4.0
 
 - CDK construct for ECS Fargate deployment, shipped in the companion
-  repository [`cdk-llm-gateway`](https://github.com/kevinkempf/cdk-llm-gateway).
+  repository [`cdk-yallmap`](https://github.com/kevinkempf/cdk-yallmap).
   No changes to this repository in this release.
 
 ## [0.3.0] - prior
