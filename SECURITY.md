@@ -34,8 +34,8 @@ upgrade.
 
 | Version | Supported |
 |---------|-----------|
-| 0.7.x   | Yes       |
-| < 0.7   | No        |
+| 0.8.x   | Yes       |
+| < 0.8   | No        |
 
 ## Scope
 
@@ -58,6 +58,5 @@ Out of scope:
 ## Known limitations
 
 The README and CHANGELOG document known operational caveats (in-memory rate
-limit state, no graceful shutdown, etc.). These are not security
-vulnerabilities; they are bounded operational tradeoffs to be aware of when
-deploying.
+limit state, etc.). These are not security vulnerabilities; they are bounded
+operational tradeoffs to be aware of when deploying.

@@ -5,6 +5,8 @@ import { firstMatch, type Router } from '../routing';
 import { handleResponse } from './response';
 import { defaultRetryOptions, backoffDelay, retryAfterDelay, sleep } from './retry';
 import type { RetryOptions } from './retry';
+import { readBodyWithLimit } from './body';
+import { buildUpstreamOptions, chainSignals } from './upstreamOptions';
 import { logger } from '../logger';
 import { compose } from '../middleware/compose';
 import type { MiddlewareFn, MiddlewareContext } from '../middleware/types';
@@ -24,8 +26,20 @@ export async function proxyMessages(
   router: Router = FALLBACK_ROUTER,
   retryOptions: RetryOptions = defaultRetryOptions(),
   middlewares: MiddlewareFn[] = [],
+  shutdownSignal?: AbortSignal,
 ): Promise<Response> {
-  const rawBody = Buffer.from(await c.req.arrayBuffer());
+  const maxBodyBytes = parseInt(process.env.MAX_BODY_BYTES ?? '4194304', 10);
+  const bodyResult = await readBodyWithLimit(c.req.raw.body, maxBodyBytes);
+  if (!bodyResult.ok) {
+    return new Response(
+      JSON.stringify({
+        type: 'error',
+        error: { type: 'request_too_large', message: `body exceeds ${bodyResult.limit} bytes` },
+      }),
+      { status: 413, headers: { 'content-type': 'application/json' } },
+    );
+  }
+  const rawBody = bodyResult.body;
 
   let parsedBody: Record<string, unknown> = {};
   try { parsedBody = JSON.parse(rawBody.toString('utf8')); } catch { /* pass through */ }
@@ -93,13 +107,14 @@ export async function proxyMessages(
       };
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const ac = new AbortController();
+        const cleanup = chainSignals(ac, c.req.raw.signal, shutdownSignal);
         try {
           const upstream = await undiciRequest(`${provider.baseUrl}${upstreamPath}`, {
             method: 'POST',
             headers: upstreamHeaders,
             body: upstreamBody,
-            headersTimeout: 30_000,
-            bodyTimeout: 300_000,
+            ...buildUpstreamOptions({ signal: ac.signal }),
           });
 
           if (retryOn(upstream.statusCode)) {
@@ -137,10 +152,13 @@ export async function proxyMessages(
           lastError = err;
           logger.warn({ requestId, provider: provider.name, err }, 'network error — trying next provider');
           break; // network error — don't retry same provider, try next in chain
+        } finally {
+          cleanup();
         }
       }
     }
 
+    logger.error({ requestId, model: ctx.model, providers: providers.map((p) => p.name), err: lastError }, 'all providers exhausted — returning 502');
     span.recordException(lastError as Error);
     span.setStatus({ code: 2 /* ERROR */, message: String(lastError) });
     span.end();

@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-03
+
+### Added
+
+- Streaming body-size cap. The `MAX_BODY_BYTES` check now operates on the
+  request stream itself (`readBodyWithLimit`), not just the
+  `Content-Length` header — a chunked request that omits or lies about
+  its length is now rejected with `413` before more than `MAX_BODY_BYTES`
+  are buffered.
+- Configurable upstream timeouts. `UPSTREAM_HEADERS_TIMEOUT_MS` (default
+  30 s) and `UPSTREAM_BODY_TIMEOUT_MS` (default 300 s) replace the
+  previously hardcoded undici timeouts and mirror undici's
+  `headersTimeout` / `bodyTimeout` knobs.
+- Per-request `AbortSignal` on every upstream call, chained to
+  `c.req.raw.signal` (client disconnect) and a process-wide shutdown
+  signal. Aborting any source aborts the in-flight upstream fetch.
+- Graceful HTTP shutdown (`SIGTERM` / `SIGINT`). The new
+  `createShutdownHandler` aborts in-flight upstream calls, runs
+  `server.close()`, falls back to `server.closeAllConnections()` after
+  `SHUTDOWN_TIMEOUT_MS` (default 25 s, under ECS's 30 s SIGKILL window),
+  then flushes the OTel SDK before exiting. Telemetry now flushes *after*
+  HTTP drains, fixing the previous lost-trailing-spans ordering.
+
+### Changed
+
+- `initTelemetry()` no longer registers signal handlers; it returns a
+  `TelemetryHandle` with an explicit `shutdown()` method so the entry
+  point can drive ordering.
+- `createApp()` accepts a `shutdownSignal?: AbortSignal` option used to
+  cancel in-flight upstream calls during graceful shutdown.
+
 ## [0.7.0] - 2026-06-03
 
 ### Added

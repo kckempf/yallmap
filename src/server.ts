@@ -16,7 +16,7 @@ type Variables = {
   costUsd?: number;
 };
 
-export function createApp(options?: { router?: Router; retryOptions?: RetryOptions; middlewares?: MiddlewareFn[] }): Hono<{ Variables: Variables }> {
+export function createApp(options?: { router?: Router; retryOptions?: RetryOptions; middlewares?: MiddlewareFn[]; shutdownSignal?: AbortSignal }): Hono<{ Variables: Variables }> {
   const app = new Hono<{ Variables: Variables }>();
 
   app.use('*', async (c, next) => {
@@ -53,7 +53,7 @@ export function createApp(options?: { router?: Router; retryOptions?: RetryOptio
     return next();
   });
 
-  app.post('/v1/messages', (c) => proxyMessages(c, options?.router, options?.retryOptions, options?.middlewares));
+  app.post('/v1/messages', (c) => proxyMessages(c, options?.router, options?.retryOptions, options?.middlewares, options?.shutdownSignal));
 
   app.notFound((c) =>
     c.json({ type: 'error', error: { type: 'not_found', message: 'route not found' } }, 404)

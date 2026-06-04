@@ -30,16 +30,15 @@ then continues running normally.
 
 ## Status
 
-**v0.7** — Multi-key authentication (`apiKeyAuth`) with per-key identity propagated
-into rate-limit keys, structured logs, and Langfuse `user.id` span attributes. Request
-body-size limit (`MAX_BODY_BYTES`, default 4 MB) returning 413 before allocation.
-Retry hardening: `Retry-After` is now clamped to `RETRY_AFTER_MAX_MS` (default 5 min)
-instead of being discarded above 60 s, and backoff switched to equal-jitter so retries
-can no longer fire back-to-back. Runtime version centralized in `src/version.ts` so
-`/health`, OTel resource attributes, and the tracer instrumentation version all track
-`package.json`. Plus OSS publication scaffolding: `LICENSE`, `CONTRIBUTING.md`,
-`CODE_OF_CONDUCT.md`, `SECURITY.md`, `CHANGELOG.md`, GitHub issue/PR templates,
-Dependabot, and a CI workflow.
+**v0.8** — Production hardening. The body-size cap now operates on the
+request stream (`readBodyWithLimit`), so chunked-encoding requests that omit
+or lie about `Content-Length` get 413 before more than `MAX_BODY_BYTES` are
+buffered. Upstream timeouts are configurable via `UPSTREAM_HEADERS_TIMEOUT_MS`
+/ `UPSTREAM_BODY_TIMEOUT_MS` and every upstream call carries an `AbortSignal`
+chained to the client request and a process-wide shutdown signal. Graceful
+shutdown on `SIGTERM` / `SIGINT` (`SHUTDOWN_TIMEOUT_MS`, default 25 s) aborts
+in-flight upstream calls, drains the HTTP server (with `closeAllConnections`
+fallback), and flushes the OTel SDK *after* HTTP traffic has drained.
 
 ## How it works
 
@@ -278,6 +277,37 @@ overloaded) on the same provider before falling back to the next one.
 | `MAX_RETRIES` | `3` | Per-provider retry attempts |
 | `RETRY_BASE_DELAY_MS` | `1000` | Base delay for backoff (ms) |
 
+## Upstream timeouts
+
+The gateway uses [`undici`](https://github.com/nodejs/undici) for upstream calls.
+Two granular timeouts cap how long we wait for an upstream provider. Both also
+respond to per-request `AbortSignal` cancellation, so a client disconnect cancels
+the upstream call in flight.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `UPSTREAM_HEADERS_TIMEOUT_MS` | `30000` | Time to wait for the first response byte (ms). Mirrors undici's `headersTimeout`. |
+| `UPSTREAM_BODY_TIMEOUT_MS` | `300000` | Time to wait for the full response body (ms). Mirrors undici's `bodyTimeout`. |
+
+## Graceful shutdown
+
+On `SIGTERM` or `SIGINT` the gateway:
+
+1. Aborts in-flight upstream calls (the per-request `AbortSignal` is chained to a
+   process-wide shutdown signal).
+2. Stops accepting new connections via `server.close()`.
+3. If `server.close()` hasn't returned within `SHUTDOWN_TIMEOUT_MS`, forces sockets
+   shut with `server.closeAllConnections()`.
+4. Flushes the OpenTelemetry SDK so trailing spans reach Langfuse.
+5. Exits.
+
+The default 25 s timeout stays under ECS's 30 s `SIGKILL` window so the orchestrator
+sees a clean exit during rolling deploys.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SHUTDOWN_TIMEOUT_MS` | `25000` | Max drain time before sockets are force-closed (ms). |
+
 ## Logging
 
 Request logs are written as structured JSON to stdout — compatible with CloudWatch,
@@ -418,7 +448,8 @@ outside the retry/fallback logic and are trivially testable in isolation.
 - [x] v0.5 — formalized `ProviderAdapter` interface; drop-in provider plugins; agent session groundwork (`x-session-id`, W3C trace context)
 - [x] v0.6 — compile-time middleware chain (`costGuard`, `rateLimit`, `piiRedactor`; custom middleware support); opt-in content capture (`CAPTURE_CONTENT`)
 - [x] v0.7 — multi-key auth (`apiKeyAuth`) with identity propagation to rate limit, logs, and Langfuse `user.id`; request body-size limit; clamped `Retry-After` + equal-jitter backoff; OSS publication scaffolding (LICENSE, CONTRIBUTING, CI, Dependabot)
-- [ ] v0.8 — TBD (candidates: persistent rate-limit state, per-key cost budgets, graceful shutdown)
+- [x] v0.8 — production hardening: streaming body-size cap, configurable upstream timeouts + per-request `AbortSignal`, graceful HTTP shutdown
+- [ ] v0.9 — TBD (candidates: persistent rate-limit state, per-key cost budgets, Prometheus `/metrics`)
 
 ## License
 

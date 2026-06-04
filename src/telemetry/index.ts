@@ -5,7 +5,11 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import { version } from '../version';
 
-export function initTelemetry(): void {
+export interface TelemetryHandle {
+  shutdown: () => Promise<void>;
+}
+
+export function initTelemetry(): TelemetryHandle {
   const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
   if (!endpoint) {
     console.warn('[telemetry] OTEL_EXPORTER_OTLP_ENDPOINT not set — spans will be discarded');
@@ -29,13 +33,7 @@ export function initTelemetry(): void {
 
   sdk.start();
 
-  const shutdown = () => {
-    sdk.shutdown()
-      .then(() => process.exit(0))
-      .catch((err) => { console.error('[telemetry] shutdown error', err); process.exit(1); });
-  };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  return { shutdown: () => sdk.shutdown() };
 }
 
 export function buildOtlpHeaders(): Record<string, string> {

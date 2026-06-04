@@ -401,6 +401,9 @@ describe('POST /v1/messages', () => {
         .mockRejectedValueOnce(new Error('ECONNREFUSED'))
         .mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
+      const { logger } = await import('../logger');
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
+
       const res = await app.request('/v1/messages', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -410,6 +413,17 @@ describe('POST /v1/messages', () => {
       expect(res.status).toBe(502);
       const json = await res.json();
       expect(json.error.type).toBe('proxy_error');
+
+      // Observability gap fix: the all-providers-exhausted path must emit a log line
+      // with the providers it tried and the last error.
+      const allExhaustedCalls = errorSpy.mock.calls.filter(
+        ([_meta, msg]) => typeof msg === 'string' && msg.includes('all providers exhausted'),
+      );
+      expect(allExhaustedCalls.length).toBe(1);
+      const meta = allExhaustedCalls[0][0] as { providers: string[]; err: Error };
+      expect(meta.providers).toEqual(['p1', 'p2']);
+      expect(meta.err).toBeInstanceOf(Error);
+      errorSpy.mockRestore();
     });
 
     it('does not retry on 4xx — forwards the error response directly', async () => {
@@ -848,6 +862,109 @@ describe('body size limit', () => {
       body: JSON.stringify(BASE_REQUEST),
     });
     expect(res.status).toBe(200);
+  });
+
+  it('returns 413 when a chunked body has no content-length but bytes exceed the limit', async () => {
+    // Lower the limit so we don't have to generate megabytes in-test.
+    vi.stubEnv('MAX_BODY_BYTES', '100');
+    try {
+      const app = createApp();
+      const big = new Uint8Array(500);
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(big);
+          controller.close();
+        },
+      });
+      const res = await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: stream,
+        // Streaming request bodies require duplex: 'half'; not in lib.dom yet.
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' });
+      expect(res.status).toBe(413);
+      const json = await res.json();
+      expect(json.error.type).toBe('request_too_large');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe('upstream signal threading', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('passes an AbortSignal to undici.request', async () => {
+    const app = createApp();
+    mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+    await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    expect(mockRequest).toHaveBeenCalledOnce();
+    const callOptions = mockRequest.mock.calls[0][1] as { signal?: AbortSignal };
+    expect(callOptions.signal).toBeInstanceOf(AbortSignal);
+    expect(callOptions.signal?.aborted).toBe(false);
+  });
+
+  it('uses default timeouts (30s headers, 300s body) when env unset', async () => {
+    const app = createApp();
+    mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+    await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    const callOptions = mockRequest.mock.calls[0][1] as { headersTimeout?: number; bodyTimeout?: number };
+    expect(callOptions.headersTimeout).toBe(30_000);
+    expect(callOptions.bodyTimeout).toBe(300_000);
+  });
+
+  it('reads UPSTREAM_HEADERS_TIMEOUT_MS and UPSTREAM_BODY_TIMEOUT_MS from env', async () => {
+    vi.stubEnv('UPSTREAM_HEADERS_TIMEOUT_MS', '7000');
+    vi.stubEnv('UPSTREAM_BODY_TIMEOUT_MS', '90000');
+    try {
+      const app = createApp();
+      mockRequest.mockResolvedValueOnce(mockUpstream(200, NON_STREAMING_RESPONSE) as never);
+
+      await app.request('/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(BASE_REQUEST),
+      });
+
+      const callOptions = mockRequest.mock.calls[0][1] as { headersTimeout?: number; bodyTimeout?: number };
+      expect(callOptions.headersTimeout).toBe(7_000);
+      expect(callOptions.bodyTimeout).toBe(90_000);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('shutdown signal propagates to the per-request controller before the upstream call resolves', async () => {
+    const shutdownAc = new AbortController();
+    const app = createApp({ shutdownSignal: shutdownAc.signal });
+
+    let capturedSignal: AbortSignal | undefined;
+    mockRequest.mockImplementationOnce(async (_url: unknown, opts: unknown) => {
+      capturedSignal = (opts as { signal?: AbortSignal }).signal;
+      shutdownAc.abort('shutting down');
+      return mockUpstream(200, NON_STREAMING_RESPONSE) as never;
+    });
+
+    await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(BASE_REQUEST),
+    });
+
+    expect(capturedSignal?.aborted).toBe(true);
   });
 });
 
