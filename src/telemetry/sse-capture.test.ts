@@ -166,6 +166,31 @@ describe('SseCapture', () => {
     });
   });
 
+  describe('SSE data continuation lines', () => {
+    // Per the SSE spec, multiple `data:` lines in a single event are joined with
+    // \n into the field value. Anthropic doesn't emit multi-line data today, but
+    // we shouldn't silently drop or corrupt continuation lines if they arrive.
+    it('joins multi-line data fields with \\n', async () => {
+      // Split between top-level object members — newline between tokens is
+      // valid JSON whitespace, so joining with \n must reparse fine.
+      const first = '{"type":"message_start",';
+      const second = '"message":{"id":"msg_x","type":"message","role":"assistant","content":[],"model":"claude-multiline","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":7,"output_tokens":1}}}';
+      const block = `event: message_start\ndata: ${first}\ndata: ${second}\n\n`;
+      const { attrs } = await pipe(block);
+      expect(attrs['gen_ai.response.model']).toBe('claude-multiline');
+      expect(attrs['gen_ai.usage.input_tokens']).toBe(7);
+    });
+
+    it('output_tokens are not under-counted when message_delta arrives as continuation lines', async () => {
+      const first = '{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},';
+      const second = '"usage":{"output_tokens":42}}';
+      const block = `event: message_delta\ndata: ${first}\ndata: ${second}\n\n`;
+      const { attrs } = await pipe(MESSAGE_START() + block);
+      expect(attrs['gen_ai.usage.output_tokens']).toBe(42);
+      expect(attrs['gen_ai.response.finish_reasons']).toEqual(['end_turn']);
+    });
+  });
+
   describe('content capture (captureContent=true)', () => {
     it('gen_ai.completion is absent by default', async () => {
       const input = MESSAGE_START() + CONTENT_DELTA('Hello') + MESSAGE_DELTA() + MESSAGE_STOP;

@@ -52,10 +52,16 @@ export class SseCapture extends Transform {
   }
 
   private parseBlock(block: string): void {
-    let dataLine = '';
+    // SSE spec: multiple `data:` lines in one event are joined with \n.
+    const dataLines: string[] = [];
     for (const line of block.split('\n')) {
-      if (line.startsWith('data: ')) dataLine = line.slice(6);
+      if (line.startsWith('data:')) {
+        const after = line.slice(5);
+        dataLines.push(after.startsWith(' ') ? after.slice(1) : after);
+      }
     }
+    if (dataLines.length === 0) return;
+    const dataLine = dataLines.join('\n');
     if (!dataLine || dataLine === '[DONE]') return;
 
     try {

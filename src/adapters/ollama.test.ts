@@ -632,6 +632,22 @@ describe('createStreamTranslator', () => {
     });
   });
 
+  describe('SSE data continuation lines', () => {
+    // Per the SSE spec, multiple `data:` lines in a single event are joined with
+    // \n. Ollama doesn't emit multi-line data today, but the translator
+    // shouldn't drop continuation lines on the floor if a server does.
+    it('joins multi-line data fields with \\n before parsing', async () => {
+      // Split between top-level object members — newline between tokens is
+      // valid JSON whitespace, so joining with \n must reproduce parseable JSON.
+      const first = '{"id":"chatcmpl-multi","object":"chat.completion.chunk","created":1000000,';
+      const second = '"model":"devstral:latest","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}';
+      const event = `data: ${first}\ndata: ${second}\n\n`;
+      const out = await translate(event);
+      expect(out).toContain('event: message_start');
+      expect(out).toContain('"text":"Hello"');
+    });
+  });
+
   describe('SseCapture compatibility', () => {
     it('emits output parseable by SseCapture', async () => {
       const { pipeline: pip } = await import('node:stream/promises');

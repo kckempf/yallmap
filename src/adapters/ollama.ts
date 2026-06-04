@@ -180,10 +180,17 @@ export function createStreamTranslator(): Transform {
       pending = events.pop() ?? '';
 
       for (const event of events) {
-        const dataLine = event.split('\n').find((l) => l.startsWith('data: '));
-        if (!dataLine) continue;
+        // SSE spec: multiple `data:` lines in one event are joined with \n.
+        const dataLines: string[] = [];
+        for (const line of event.split('\n')) {
+          if (line.startsWith('data:')) {
+            const after = line.slice(5);
+            dataLines.push(after.startsWith(' ') ? after.slice(1) : after);
+          }
+        }
+        if (dataLines.length === 0) continue;
 
-        const raw = dataLine.slice(6).trim();
+        const raw = dataLines.join('\n').trim();
         if (raw === '[DONE]') continue;
 
         let parsed: Record<string, unknown>;
