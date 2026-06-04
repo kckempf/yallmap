@@ -6,14 +6,28 @@ export interface RateLimitOptions {
   keyFn?: (ctx: MiddlewareContext) => string;
 }
 
-export function rateLimit({ requests, windowMs, keyFn }: RateLimitOptions): MiddlewareFn {
-  const windows = new Map<string, { count: number; resetAt: number }>();
+type Window = { count: number; resetAt: number };
+const WINDOWS = new WeakMap<MiddlewareFn, Map<string, Window>>();
 
-  return async (ctx, next) => {
+export function rateLimit({ requests, windowMs, keyFn }: RateLimitOptions): MiddlewareFn {
+  const windows = new Map<string, Window>();
+  // Sweep stale entries at most once per windowMs to bound the map's growth
+  // from one-shot clients that never return.
+  let nextSweepAt = 0;
+
+  const middleware: MiddlewareFn = async (ctx, next) => {
     const key = keyFn
       ? keyFn(ctx)
       : (ctx.auth?.keyId ?? ctx.clientHeaders['x-api-key'] ?? 'global');
     const now = Date.now();
+
+    if (now >= nextSweepAt) {
+      for (const [k, w] of windows) {
+        if (now >= w.resetAt) windows.delete(k);
+      }
+      nextSweepAt = now + windowMs;
+    }
+
     let win = windows.get(key);
     if (!win || now >= win.resetAt) {
       win = { count: 0, resetAt: now + windowMs };
@@ -38,4 +52,15 @@ export function rateLimit({ requests, windowMs, keyFn }: RateLimitOptions): Midd
     win.count++;
     return next();
   };
+
+  WINDOWS.set(middleware, windows);
+  return middleware;
 }
+
+export const __rateLimitInternal = {
+  getWindows(mw: MiddlewareFn): Map<string, Window> {
+    const w = WINDOWS.get(mw);
+    if (!w) throw new Error('not a rateLimit middleware');
+    return w;
+  },
+};

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { rateLimit } from './rateLimit';
+import { rateLimit, __rateLimitInternal } from './rateLimit';
 import type { MiddlewareContext } from './types';
 
 const OK = new Response('ok', { status: 200 });
@@ -112,5 +112,47 @@ describe('rateLimit', () => {
     await limiter(ctx, next);
     const res = await limiter(ctx, next);
     expect(res.status).toBe(429);
+  });
+
+  describe('stale-entry pruning', () => {
+    it('drops entries for keys that stop sending requests after windowMs elapses', async () => {
+      const limiter = rateLimit({ requests: 5, windowMs: 1_000 });
+      const windows = __rateLimitInternal.getWindows(limiter);
+
+      // Many one-shot clients leave stale entries in the map.
+      for (let i = 0; i < 100; i++) await limiter(makeCtx(`one-shot-${i}`), next);
+      expect(windows.size).toBe(100);
+
+      // Advance past the window so all entries are stale.
+      vi.advanceTimersByTime(1_500);
+
+      // A single request from a recurring client should sweep the stale ones.
+      await limiter(makeCtx('recurring'), next);
+      expect(windows.size).toBe(1);
+      expect(windows.has('recurring')).toBe(true);
+    });
+
+    it('does not sweep on every request — only periodically', async () => {
+      const limiter = rateLimit({ requests: 100, windowMs: 60_000 });
+      const windows = __rateLimitInternal.getWindows(limiter);
+
+      // Burst of distinct keys, all live (no time passing).
+      for (let i = 0; i < 50; i++) await limiter(makeCtx(`key-${i}`), next);
+      // None should have been pruned since none expired.
+      expect(windows.size).toBe(50);
+    });
+
+    it('does not prune keys whose windows are still live', async () => {
+      const limiter = rateLimit({ requests: 5, windowMs: 60_000 });
+      const windows = __rateLimitInternal.getWindows(limiter);
+
+      await limiter(makeCtx('key-a'), next);
+      vi.advanceTimersByTime(30_000); // less than windowMs
+      await limiter(makeCtx('key-b'), next);
+
+      // Even if a sweep triggers, key-a is still in a live window.
+      expect(windows.has('key-a')).toBe(true);
+      expect(windows.has('key-b')).toBe(true);
+    });
   });
 });
