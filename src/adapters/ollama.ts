@@ -302,7 +302,37 @@ export function createStreamTranslator(): Transform {
       callback();
     },
 
-    flush(callback) { callback(); },
+    flush(callback) {
+      // If the upstream stream ended without a finish_reason chunk, close any
+      // open blocks and synthesise a message_delta + message_stop so the
+      // downstream SSE remains well-formed per Anthropic's spec. Skipped when
+      // no message_start was ever emitted (nothing to close).
+      if (firstChunk) { callback(); return; }
+
+      if (textBlockOpen) {
+        this.push(`event: content_block_stop\ndata: ${JSON.stringify({
+          type: 'content_block_stop', index: 0,
+        })}\n\n`);
+        textBlockOpen = false;
+      }
+      for (const blockIndex of openToolBlocks.values()) {
+        this.push(`event: content_block_stop\ndata: ${JSON.stringify({
+          type: 'content_block_stop', index: blockIndex,
+        })}\n\n`);
+      }
+      openToolBlocks.clear();
+
+      this.push(`event: message_delta\ndata: ${JSON.stringify({
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { output_tokens: 0 },
+      })}\n\n`);
+      this.push(`event: message_stop\ndata: ${JSON.stringify({
+        type: 'message_stop',
+      })}\n\n`);
+
+      callback();
+    },
   });
 }
 

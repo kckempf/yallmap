@@ -621,6 +621,51 @@ describe('createStreamTranslator', () => {
       const out = await translate('data: [DONE]\n\n');
       expect(out).toBe('');
     });
+
+    // Real gap: if the upstream Ollama stream ends cleanly without ever
+    // delivering a finish_reason chunk, the original code left any open
+    // text/tool blocks dangling and never emitted message_stop — malformed
+    // SSE per Anthropic's spec, and clients hang waiting for a final event.
+    it('closes an open text block on clean end without finish_reason', async () => {
+      const out = await translate([
+        ollamaChunk({ role: 'assistant', content: 'Hello' }),
+        // no finish_reason chunk — stream just ends
+      ]);
+      expect(out).toContain('event: content_block_stop');
+      expect(out).toContain('event: message_stop');
+    });
+
+    it('closes open tool blocks on clean end without finish_reason', async () => {
+      const out = await translate([
+        ollamaChunk({ role: 'assistant', content: '' }),
+        ollamaChunk({
+          tool_calls: [{ index: 0, id: 'call_abc', function: { name: 'lookup', arguments: '{"q":' } }],
+        }),
+        // no finish_reason — stream ends mid tool-call
+      ]);
+      // The tool block was at index 1 (text was at 0)
+      const stopEvents = [...out.matchAll(/event: content_block_stop\ndata: ([^\n]+)/g)]
+        .map((m) => JSON.parse(m[1]) as { index: number });
+      const indices = stopEvents.map((e) => e.index).sort();
+      expect(indices).toEqual([0, 1]);
+      expect(out).toContain('event: message_stop');
+    });
+
+    it('emits no synthetic stop events when no message_start was ever sent', async () => {
+      // Upstream sent nothing usable — don't fabricate a fake start/stop pair.
+      const out = await translate('');
+      expect(out).toBe('');
+    });
+
+    it('synthesised message_delta carries best-effort stop_reason', async () => {
+      const out = await translate([
+        ollamaChunk({ role: 'assistant', content: 'partial' }),
+      ]);
+      const deltaLine = out.split('\n').find((l) => l.startsWith('data:') && l.includes('message_delta'));
+      expect(deltaLine).toBeTruthy();
+      const data = JSON.parse(deltaLine!.slice(5));
+      expect(data.delta.stop_reason).toBe('end_turn');
+    });
   });
 
   describe('chunked delivery', () => {
