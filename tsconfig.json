@@ -10,6 +10,8 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
+    "types": ["node"],
+    "ignoreDeprecations": "6.0",
     "sourceMap": true,
     "declaration": true
   },
