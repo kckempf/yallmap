@@ -9,7 +9,7 @@ attackers — before a fix is available.
 Use one of the private channels below:
 
 1. **Preferred — GitHub private vulnerability reporting.** Go to the
-   repository's [Security tab](https://github.com/kevinkempf/llm-gateway/security)
+   repository's [Security tab](https://github.com/kckempf/yallmap/security)
    and click "Report a vulnerability." This routes the report directly to
    the maintainers and creates a private discussion for triage.
 

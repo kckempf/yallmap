@@ -1,4 +1,4 @@
-# Contributing to llm-gateway
+# Contributing to yallmap
 
 Thanks for your interest. This project is small and opinionated; the guidelines
 below exist so contributions land cleanly with minimal back-and-forth.
@@ -6,7 +6,7 @@ below exist so contributions land cleanly with minimal back-and-forth.
 ## Development setup
 
 ```bash
-git clone https://github.com/kevinkempf/llm-gateway && cd llm-gateway
+git clone https://github.com/kckempf/yallmap && cd yallmap
 npm install
 cp .env.example .env       # edit to taste; Langfuse vars are optional
 npm test                   # vitest, expect green

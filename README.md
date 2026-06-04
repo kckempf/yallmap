@@ -1,6 +1,6 @@
-# llm-gateway
+# yallmap
 
-![CI](https://github.com/kevinkempf/llm-gateway/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/kckempf/yallmap/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D20-blue)
 
@@ -9,14 +9,14 @@ of [Claude Code](https://claude.ai/code) or any Anthropic SDK client to get per-
 token tracking, cost attribution, and latency observability in
 [Langfuse](https://langfuse.com) — no client changes required.
 
-Primary use case: running Claude Code through the gateway via `ANTHROPIC_BASE_URL` to
-get per-request token tracking, latency, and model observability without changing any
-client code.
+## Why this exists
 
-## Try it in 60 seconds
+LiteLLM, Helicone, and Portkey are already out there, making this Yet Another LLM Proxy (YALLMAP). This is a different point in the design space: TypeScript-native, Anthropic API-first (not OpenAI-shaped), with routing rules expressed as typed functions instead of YAML or CEL. Built around Claude Code as a primary client, optimized for streaming and tool-use.  It's the LLM proxy that I need, so I've built it and shared it, as I can't be the only one who works the way I do.
+
+## Try it in 2 minutes (if you have Claude Code installed)
 
 ```bash
-git clone https://github.com/kevinkempf/llm-gateway && cd llm-gateway
+git clone https://github.com/kckempf/yallmap && cd yallmap
 npm install
 npm run dev                          # starts on :3001
 
@@ -30,20 +30,12 @@ then continues running normally.
 
 ## Status
 
-**v0.8** — Production hardening. The body-size cap now operates on the
-request stream (`readBodyWithLimit`), so chunked-encoding requests that omit
-or lie about `Content-Length` get 413 before more than `MAX_BODY_BYTES` are
-buffered. Upstream timeouts are configurable via `UPSTREAM_HEADERS_TIMEOUT_MS`
-/ `UPSTREAM_BODY_TIMEOUT_MS` and every upstream call carries an `AbortSignal`
-chained to the client request and a process-wide shutdown signal. Graceful
-shutdown on `SIGTERM` / `SIGINT` (`SHUTDOWN_TIMEOUT_MS`, default 25 s) aborts
-in-flight upstream calls, drains the HTTP server (with `closeAllConnections`
-fallback), and flushes the OTel SDK *after* HTTP traffic has drained.
+**v0.8** — Production hardening. See roadmap below.
 
 ## How it works
 
 ```text
-Claude Code ──► llm-gateway :3001 ──► api.anthropic.com
+Claude Code ──► yallmap :3001 ──► api.anthropic.com
                      │          └───► Ollama (ollama/* models)
                      │
                      └──► Langfuse (via OTLP)
@@ -372,12 +364,12 @@ distinguishing local vs. cloud inference in Langfuse dashboards.
 ## Docker
 
 ```bash
-docker build -t llm-gateway .
+docker build -t yallmap .
 docker run -p 3001:3001 \
   -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:3000/api/public/otel/v1/traces \
   -e LANGFUSE_PUBLIC_KEY=pk-lf-... \
   -e LANGFUSE_SECRET_KEY=sk-lf-... \
-  llm-gateway
+  yallmap
 ```
 
 The multi-stage Dockerfile builds in `node:22-alpine`, copies only compiled output into
