@@ -18,7 +18,8 @@ const CAPTURE_CONTENT = process.env.CAPTURE_CONTENT === 'true';
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailers', 'transfer-encoding', 'upgrade', 'host',
-  'x-session-id',  // gateway-only header — not forwarded upstream
+  'x-session-id',       // gateway-only header — not forwarded upstream
+  'x-capture-content',  // gateway-only header — not forwarded upstream
 ]);
 
 export async function proxyMessages(
@@ -57,6 +58,11 @@ export async function proxyMessages(
   const parentCtx = propagation.extract(context.active(), carrier);
 
   const sessionId = c.req.header('x-session-id');
+  // Per-request opt-in: client can ask the gateway to capture LLM input/output
+  // on the span (gen_ai.prompt / gen_ai.completion). OR'd with the global
+  // CAPTURE_CONTENT env var so either knob is sufficient.
+  const clientCapture = c.req.header('x-capture-content') === 'true';
+  const captureContent = CAPTURE_CONTENT || clientCapture;
 
   const clientHeaders: Record<string, string> = {};
   for (const [key, value] of c.req.raw.headers.entries()) {
@@ -146,7 +152,7 @@ export async function proxyMessages(
           }
 
           c.set('provider' as never, provider.name as never);
-          return await handleResponse(upstream, provider, span, ctx.body, ctx.isStreaming, c, CAPTURE_CONTENT);
+          return await handleResponse(upstream, provider, span, ctx.body, ctx.isStreaming, c, captureContent);
 
         } catch (err) {
           lastError = err;
