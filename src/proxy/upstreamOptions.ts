@@ -1,6 +1,8 @@
 export interface UpstreamOptionsInput {
   signal: AbortSignal;
   env?: NodeJS.ProcessEnv;
+  /** Per-provider hints — used when no env-var override is set. */
+  provider?: { headersTimeoutMs?: number; bodyTimeoutMs?: number };
 }
 
 export interface UpstreamOptions {
@@ -19,11 +21,23 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   return n;
 }
 
+/**
+ * Precedence for each timeout value: env var (global user override) wins, then
+ * provider hint (knows its own characteristics), then a conservative default.
+ */
 export function buildUpstreamOptions(input: UpstreamOptionsInput): UpstreamOptions {
   const env = input.env ?? process.env;
+  const providerHeaders = input.provider?.headersTimeoutMs;
+  const providerBody = input.provider?.bodyTimeoutMs;
   return {
-    headersTimeout: parsePositiveInt(env.UPSTREAM_HEADERS_TIMEOUT_MS, DEFAULT_HEADERS_TIMEOUT_MS),
-    bodyTimeout: parsePositiveInt(env.UPSTREAM_BODY_TIMEOUT_MS, DEFAULT_BODY_TIMEOUT_MS),
+    headersTimeout: parsePositiveInt(
+      env.UPSTREAM_HEADERS_TIMEOUT_MS,
+      providerHeaders ?? DEFAULT_HEADERS_TIMEOUT_MS,
+    ),
+    bodyTimeout: parsePositiveInt(
+      env.UPSTREAM_BODY_TIMEOUT_MS,
+      providerBody ?? DEFAULT_BODY_TIMEOUT_MS,
+    ),
     signal: input.signal,
   };
 }

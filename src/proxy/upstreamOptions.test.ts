@@ -50,6 +50,35 @@ describe('buildUpstreamOptions', () => {
     const opts = buildUpstreamOptions({ signal: ac.signal, env: {} });
     expect(opts.signal).toBe(ac.signal);
   });
+
+  it('uses provider hint when no env var is set', () => {
+    const opts = buildUpstreamOptions({
+      signal: ac.signal,
+      env: {},
+      provider: { headersTimeoutMs: 300_000, bodyTimeoutMs: 600_000 },
+    });
+    expect(opts.headersTimeout).toBe(300_000);
+    expect(opts.bodyTimeout).toBe(600_000);
+  });
+
+  it('env var overrides provider hint (explicit user override wins)', () => {
+    const opts = buildUpstreamOptions({
+      signal: ac.signal,
+      env: { UPSTREAM_HEADERS_TIMEOUT_MS: '10000' },
+      provider: { headersTimeoutMs: 300_000 },
+    });
+    expect(opts.headersTimeout).toBe(10_000);
+  });
+
+  it('provider hint falls back to default when its values are absent', () => {
+    const opts = buildUpstreamOptions({
+      signal: ac.signal,
+      env: {},
+      provider: {},
+    });
+    expect(opts.headersTimeout).toBe(30_000);
+    expect(opts.bodyTimeout).toBe(300_000);
+  });
 });
 
 describe('chainSignals', () => {

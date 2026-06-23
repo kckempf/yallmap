@@ -120,7 +120,13 @@ export async function proxyMessages(
             method: 'POST',
             headers: upstreamHeaders,
             body: upstreamBody,
-            ...buildUpstreamOptions({ signal: ac.signal }),
+            ...buildUpstreamOptions({
+              signal: ac.signal,
+              provider: {
+                headersTimeoutMs: provider.headersTimeoutMs,
+                bodyTimeoutMs: provider.bodyTimeoutMs,
+              },
+            }),
           });
 
           if (retryOn(upstream.statusCode)) {
