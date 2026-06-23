@@ -21,10 +21,10 @@
  *   whenModel('claude-haiku-4-5', chain(ollamaHaiku, anthropic))
  *     → haiku requests go to qwen3:8b locally, fall back to Anthropic if Ollama is down
  */
-import { firstMatch, whenModel, chain, anthropic, ollama } from './index';
+import { firstMatch, whenModel, anthropic, ollama } from './index';
 
 export const router = firstMatch([
-  whenModel(/^ollama\//i, chain(ollama, anthropic)),  // fall back to Anthropic if Ollama is unavailable
+  whenModel(/^ollama\//i, ollama),  // ollama/* stays on Ollama — failures surface loudly instead of silently billing Anthropic
   // Route claude-haiku-4-5 to a local model, fall back to Anthropic:
   // whenModel('claude-haiku-4-5', chain({ ...ollama, modelOverride: 'qwen3:8b' }, anthropic)),
 ]);

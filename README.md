@@ -198,13 +198,18 @@ Routing rules live in `src/routing/config.ts`. Rules are TypeScript functions �
 no YAML, no DSL.
 
 ```typescript
-import { firstMatch, whenModel, chain, anthropic, ollama } from './index';
+import { firstMatch, whenModel, anthropic, ollama } from './index';
 
 export const router = firstMatch([
-  // Route ollama/* models to local Ollama, fall back to Anthropic if unavailable
-  whenModel(/^ollama\//i, chain(ollama, anthropic)),
+  // Route ollama/* models to local Ollama
+  whenModel(/^ollama\//i, ollama),
 ]);
 ```
+
+Use `chain(ollama, anthropic)` instead of `ollama` if you want Anthropic
+fallback when Ollama is unreachable (and you've configured a real Anthropic
+API key). The default routes `ollama/*` to Ollama only — failures surface
+loudly rather than silently billing Anthropic.
 
 ### Helpers
 
@@ -278,8 +283,8 @@ the upstream call in flight.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `UPSTREAM_HEADERS_TIMEOUT_MS` | `30000` | Time to wait for the first response byte (ms). Mirrors undici's `headersTimeout`. |
-| `UPSTREAM_BODY_TIMEOUT_MS` | `300000` | Time to wait for the full response body (ms). Mirrors undici's `bodyTimeout`. |
+| `UPSTREAM_HEADERS_TIMEOUT_MS` | _(per-provider)_ | Time to wait for the first response byte (ms). Mirrors undici's `headersTimeout`. If set, applies to **all** providers (explicit global override). If unset, each provider uses its own `headersTimeoutMs` hint, falling back to `30000`. The built-in `ollama` provider hints `300000` because local model cold-load can take 15-30s before any byte is sent. |
+| `UPSTREAM_BODY_TIMEOUT_MS` | _(per-provider)_ | Time to wait for the full response body (ms). Same precedence rules as above; defaults to `300000` when no hint is provided. |
 
 ## Graceful shutdown
 
@@ -319,7 +324,7 @@ with `pino-pretty` for readability.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `LOG_LEVEL` | `info` | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `fatal` |
-| `CAPTURE_CONTENT` | _(unset)_ | Set to `true` to record prompt and completion in Langfuse traces (`gen_ai.prompt` / `gen_ai.completion` span attributes). Off by default — message content stays out of telemetry. |
+| `CAPTURE_CONTENT` | _(unset)_ | Set to `true` to record prompt and completion in Langfuse traces (`gen_ai.prompt` / `gen_ai.completion` span attributes). Off by default — message content stays out of telemetry. Clients can also opt in per-request via the `x-capture-content: true` request header (OR'd with this env var); the header is stripped before forwarding upstream. |
 
 ## Cost tracking
 
@@ -355,8 +360,8 @@ Each request produces a `gen_ai.request` span with:
 | `gen_ai.usage.output_tokens` | `13` |
 | `gen_ai.usage.cost_usd` | `0.000224` |
 | `gen_ai.response.finish_reasons` | `["end_turn"]` |
-| `gen_ai.prompt` | `[{"role":"user","content":"Hello"}]` _(opt-in: `CAPTURE_CONTENT=true`)_ |
-| `gen_ai.completion` | `[{"type":"text","text":"Hi there"}]` _(opt-in: `CAPTURE_CONTENT=true`)_ |
+| `gen_ai.prompt` | `[{"role":"user","content":"Hello"}]` _(opt-in: `CAPTURE_CONTENT=true` or `x-capture-content: true` header)_ |
+| `gen_ai.completion` | `[{"type":"text","text":"Hi there"}]` _(opt-in: `CAPTURE_CONTENT=true` or `x-capture-content: true` header)_ |
 
 `gen_ai.system` reflects the provider that actually handled the request — useful for
 distinguishing local vs. cloud inference in Langfuse dashboards.
