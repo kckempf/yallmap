@@ -89,6 +89,24 @@ describe('translateRequest', () => {
     expect(result.stream).toBe(false);
   });
 
+  it('sets stream_options.include_usage on streaming requests so Ollama emits a usage chunk', () => {
+    // Without this flag, OpenAI-compatible servers (including Ollama) drop the
+    // usage object from the stream entirely — observed in Langfuse as input/
+    // output_tokens of 0 on every span. This is the load-bearing edit for the
+    // bug where streaming Ollama showed no usage at all.
+    const result = translateRequest({ model: 'ollama/llama3', messages: [], stream: true });
+    expect(result.stream_options).toEqual({ include_usage: true });
+  });
+
+  it('omits stream_options on non-streaming requests', () => {
+    // The flag only applies to streaming. The non-streaming response already
+    // carries usage in its body; adding stream_options would be a harmless
+    // no-op but it's noise on the wire and we'd rather keep the request
+    // minimal so the diff against Ollama curl examples stays small.
+    const result = translateRequest({ model: 'ollama/llama3', messages: [], stream: false });
+    expect(result.stream_options).toBeUndefined();
+  });
+
   it('flattens a content array to a single text string', () => {
     const result = translateRequest({
       model: 'ollama/llama3',
@@ -665,6 +683,99 @@ describe('createStreamTranslator', () => {
       expect(deltaLine).toBeTruthy();
       const data = JSON.parse(deltaLine!.slice(5));
       expect(data.delta.stop_reason).toBe('end_turn');
+    });
+  });
+
+  // The OpenAI streaming spec emits usage on its OWN chunk (choices=[]) AFTER
+  // the finish_reason chunk — not on the same chunk. The translator has to
+  // accumulate usage across chunks and defer the message_delta emit until
+  // both finish_reason AND usage are in hand, so the Anthropic-shape stream
+  // carries the full count downstream.
+  describe('stream termination — usage handling', () => {
+    function usageChunk(promptTokens: number, completionTokens: number, model = 'devstral:latest'): string {
+      return `data: ${JSON.stringify({
+        id: 'chatcmpl-1',
+        object: 'chat.completion.chunk',
+        created: 1000000,
+        model,
+        choices: [],
+        usage: {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: promptTokens + completionTokens,
+        },
+      })}\n\n`;
+    }
+
+    it('emits message_delta.usage with both input_tokens and output_tokens', async () => {
+      // Real Ollama wire order: content chunks → finish_reason chunk →
+      // usage chunk → [DONE]. The translator must wait for the usage chunk
+      // before emitting the synthesised message_delta — otherwise the
+      // downstream SSE carries zeros and Langfuse charts come up empty.
+      const out = await translate([
+        ollamaChunk({ role: 'assistant', content: 'Hi' }),
+        ollamaChunk({ content: '' }, 'stop'),
+        usageChunk(42, 7),
+      ]);
+      const deltaLine = out.split('\n').find((l) => l.startsWith('data:') && l.includes('message_delta'));
+      expect(deltaLine).toBeTruthy();
+      const data = JSON.parse(deltaLine!.slice(5));
+      expect(data.usage).toEqual({ input_tokens: 42, output_tokens: 7 });
+    });
+
+    it('does not emit message_delta on the finish_reason chunk when no usage has arrived yet', async () => {
+      // If the translator emits early on finish_reason, it has to emit zeros
+      // for tokens — which is what we're trying to fix. Verify the deferred
+      // behavior by chunking just up to (but not including) the usage chunk.
+      const finishOnly = await translate([
+        ollamaChunk({ role: 'assistant', content: 'Hi' }),
+        ollamaChunk({ content: '' }, 'stop'),
+      ]);
+      // The synthesised tail still has to fire (in flush) so the client
+      // sees a well-formed end of stream — but it shouldn't have fired
+      // *during* transform when finish_reason arrived. Check by counting:
+      // exactly one message_delta and one message_stop in the whole stream.
+      expect(finishOnly.match(/event: message_delta/g)?.length).toBe(1);
+      expect(finishOnly.match(/event: message_stop/g)?.length).toBe(1);
+    });
+
+    it('falls back to zero tokens when usage chunk never arrives', async () => {
+      // Defensive: include_usage=true may not actually produce a usage chunk
+      // for every Ollama backend version. We still must close the stream
+      // cleanly so the client doesn't hang — zeros are the honest answer.
+      const out = await translate([
+        ollamaChunk({ role: 'assistant', content: 'Hi' }),
+        ollamaChunk({ content: '' }, 'stop'),
+      ]);
+      const deltaLine = out.split('\n').find((l) => l.startsWith('data:') && l.includes('message_delta'));
+      const data = JSON.parse(deltaLine!.slice(5));
+      expect(data.usage).toEqual({ input_tokens: 0, output_tokens: 0 });
+    });
+
+    it('preserves stop_reason from the finish_reason chunk even when usage arrives later', async () => {
+      // stop_reason and usage come from different chunks. Both must end up
+      // on the single synthesised message_delta.
+      const out = await translate([
+        ollamaChunk({ role: 'assistant', content: '' }),
+        ollamaChunk({ content: '' }, 'length'),
+        usageChunk(10, 3),
+      ]);
+      const deltaLine = out.split('\n').find((l) => l.startsWith('data:') && l.includes('message_delta'));
+      const data = JSON.parse(deltaLine!.slice(5));
+      expect(data.delta.stop_reason).toBe('max_tokens');
+      expect(data.usage).toEqual({ input_tokens: 10, output_tokens: 3 });
+    });
+
+    it('emits message_stop after the usage-bearing message_delta', async () => {
+      // Order matters for Anthropic SSE clients — message_stop must be last.
+      const out = await translate([
+        ollamaChunk({ role: 'assistant', content: 'Hi' }),
+        ollamaChunk({ content: '' }, 'stop'),
+        usageChunk(5, 2),
+      ]);
+      const deltaIdx = out.indexOf('event: message_delta');
+      const stopIdx = out.indexOf('event: message_stop');
+      expect(stopIdx).toBeGreaterThan(deltaIdx);
     });
   });
 

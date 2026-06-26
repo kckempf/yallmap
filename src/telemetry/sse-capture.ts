@@ -85,6 +85,13 @@ export class SseCapture extends Transform {
       if (typeof usage?.output_tokens === 'number') {
         this.attrs['gen_ai.usage.output_tokens'] = usage.output_tokens;
       }
+      // Anthropic native carries input_tokens on message_start. The Ollama
+      // adapter puts it on message_delta instead — Ollama doesn't return
+      // prompt_tokens until after the stream content, so message_start is
+      // too early. Reading from both places is the permissive path.
+      if (typeof usage?.input_tokens === 'number') {
+        this.attrs['gen_ai.usage.input_tokens'] = usage.input_tokens;
+      }
       const delta = event.delta as Record<string, unknown> | undefined;
       if (typeof delta?.stop_reason === 'string') {
         this.attrs['gen_ai.response.finish_reasons'] = [delta.stop_reason];

@@ -95,6 +95,12 @@ export function translateRequest(body: Record<string, unknown>): Record<string, 
 
   if (typeof body.max_tokens === 'number')   result.max_tokens = body.max_tokens;
   if (body.stream !== undefined)             result.stream = body.stream;
+  // OpenAI-compatible streaming drops the usage object from the wire unless
+  // the caller explicitly asks for it. Without this flag, Langfuse charts
+  // and any other downstream consumer see input/output tokens of 0 on every
+  // streaming Ollama span — there's no way to recover the count after the
+  // fact. The non-streaming path already carries usage in the body.
+  if (body.stream === true)                  result.stream_options = { include_usage: true };
   if (typeof body.temperature === 'number')  result.temperature = body.temperature;
   if (typeof body.top_p === 'number')        result.top_p = body.top_p;
   if (Array.isArray(body.stop_sequences))    result.stop = body.stop_sequences;
@@ -171,6 +177,13 @@ export function createStreamTranslator(): Transform {
   const openToolBlocks = new Map<number, number>(); // ollamaIndex → blockIndex
   let nextBlockIndex = 1;
   let textBlockOpen = false;
+  // The finish_reason chunk and the usage chunk arrive separately in
+  // OpenAI-compatible streams (when stream_options.include_usage is set).
+  // Accumulate both across chunks and emit the synthesised message_delta
+  // exactly once — in flush() — so the downstream Anthropic-shape SSE carries
+  // both the stop reason and the token counts on a single event.
+  let pendingStopReason: string | null = null;
+  const pendingUsage = { input_tokens: 0, output_tokens: 0 };
 
   return new Transform({
     transform(chunk: Buffer, _enc, callback) {
@@ -197,6 +210,16 @@ export function createStreamTranslator(): Transform {
         try { parsed = JSON.parse(raw); } catch { continue; }
 
         if (typeof parsed.model === 'string') model = parsed.model;
+
+        // Usage may arrive on its own chunk (choices=[], usage populated)
+        // AFTER the finish_reason chunk, per the OpenAI streaming spec.
+        // Accumulate eagerly on any chunk that carries it so the order of
+        // finish_reason vs usage chunks doesn't matter.
+        const usage = parsed.usage as Record<string, unknown> | undefined;
+        if (usage) {
+          if (typeof usage.prompt_tokens === 'number') pendingUsage.input_tokens = usage.prompt_tokens;
+          if (typeof usage.completion_tokens === 'number') pendingUsage.output_tokens = usage.completion_tokens;
+        }
 
         const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
         const choice = (choices[0] ?? {}) as Record<string, unknown>;
@@ -268,34 +291,23 @@ export function createStreamTranslator(): Transform {
         }
 
         if (finishReason) {
-          const stopReason = mapFinishReason(finishReason) ?? finishReason;
-          const usageData = (parsed.usage ?? {}) as Record<string, number>;
-
-          // Close text block if still open
+          // Close blocks immediately so any subsequent usage-only chunk
+          // doesn't interleave with content events. Don't emit
+          // message_delta / message_stop yet — those wait for flush, when
+          // pendingUsage has had every chunk to land on.
           if (textBlockOpen) {
             this.push(`event: content_block_stop\ndata: ${JSON.stringify({
               type: 'content_block_stop', index: 0,
             })}\n\n`);
             textBlockOpen = false;
           }
-
-          // Close all open tool blocks
           for (const blockIndex of openToolBlocks.values()) {
             this.push(`event: content_block_stop\ndata: ${JSON.stringify({
               type: 'content_block_stop', index: blockIndex,
             })}\n\n`);
           }
           openToolBlocks.clear();
-
-          this.push(`event: message_delta\ndata: ${JSON.stringify({
-            type: 'message_delta',
-            delta: { stop_reason: stopReason, stop_sequence: null },
-            usage: { output_tokens: usageData.completion_tokens ?? 0 },
-          })}\n\n`);
-
-          this.push(`event: message_stop\ndata: ${JSON.stringify({
-            type: 'message_stop',
-          })}\n\n`);
+          pendingStopReason = mapFinishReason(finishReason) ?? finishReason;
         }
       }
 
@@ -303,10 +315,11 @@ export function createStreamTranslator(): Transform {
     },
 
     flush(callback) {
-      // If the upstream stream ended without a finish_reason chunk, close any
-      // open blocks and synthesise a message_delta + message_stop so the
-      // downstream SSE remains well-formed per Anthropic's spec. Skipped when
-      // no message_start was ever emitted (nothing to close).
+      // Single termination path for both the happy case (finish_reason +
+      // usage both arrived) and the degraded one (no finish_reason — Ollama
+      // dropped the connection). In the happy case, the closes already ran
+      // when finish_reason fired; the guards below no-op cleanly. In the
+      // degraded case, this is where every dangling block gets closed.
       if (firstChunk) { callback(); return; }
 
       if (textBlockOpen) {
@@ -324,8 +337,8 @@ export function createStreamTranslator(): Transform {
 
       this.push(`event: message_delta\ndata: ${JSON.stringify({
         type: 'message_delta',
-        delta: { stop_reason: 'end_turn', stop_sequence: null },
-        usage: { output_tokens: 0 },
+        delta: { stop_reason: pendingStopReason ?? 'end_turn', stop_sequence: null },
+        usage: { input_tokens: pendingUsage.input_tokens, output_tokens: pendingUsage.output_tokens },
       })}\n\n`);
       this.push(`event: message_stop\ndata: ${JSON.stringify({
         type: 'message_stop',

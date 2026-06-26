@@ -98,6 +98,33 @@ describe('SseCapture', () => {
       const { attrs } = await pipe(event);
       expect(attrs['gen_ai.usage.output_tokens']).toBeUndefined();
     });
+
+    it('extracts gen_ai.usage.input_tokens from message_delta.usage', async () => {
+      // The Ollama-adapter path puts input_tokens on message_delta because it
+      // can't fit them on message_start — Ollama doesn't return prompt_tokens
+      // until after the content is streamed. Anthropic native carries this on
+      // message_start instead, so reading it from BOTH places is the permissive
+      // path that fixes Ollama without breaking Anthropic.
+      const event = `event: message_delta\ndata: ${JSON.stringify({
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { input_tokens: 42, output_tokens: 7 },
+      })}\n\n`;
+      const { attrs } = await pipe(event);
+      expect(attrs['gen_ai.usage.input_tokens']).toBe(42);
+      expect(attrs['gen_ai.usage.output_tokens']).toBe(7);
+    });
+
+    it('ignores input_tokens on message_delta if not a number', async () => {
+      const event = `event: message_delta\ndata: ${JSON.stringify({
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { input_tokens: 'many', output_tokens: 5 },
+      })}\n\n`;
+      const { attrs } = await pipe(event);
+      expect(attrs['gen_ai.usage.input_tokens']).toBeUndefined();
+      expect(attrs['gen_ai.usage.output_tokens']).toBe(5);
+    });
   });
 
   describe('full streaming response', () => {
