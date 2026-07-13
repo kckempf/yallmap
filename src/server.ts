@@ -3,6 +3,7 @@ import { proxyMessages } from './proxy/index';
 import { type Router } from './routing';
 import { type RetryOptions } from './proxy/retry';
 import { type MiddlewareFn } from './middleware/types';
+import { forwardOtlpTraces } from './telemetry/forward';
 import { logger } from './logger';
 import { version } from './version';
 
@@ -54,6 +55,10 @@ export function createApp(options?: { router?: Router; retryOptions?: RetryOptio
   });
 
   app.post('/v1/messages', (c) => proxyMessages(c, options?.router, options?.retryOptions, options?.middlewares, options?.shutdownSignal));
+
+  // OTLP trace proxy: downstream services POST here, we forward to
+  // Langfuse with yallmap's own auth injected. See src/telemetry/forward.ts.
+  app.post('/otel/v1/traces', (c) => forwardOtlpTraces(c));
 
   app.notFound((c) =>
     c.json({ type: 'error', error: { type: 'not_found', message: 'route not found' } }, 404)
