@@ -26,7 +26,7 @@
     "ollama"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "dev": "node --env-file=.env --require tsx/cjs --watch src/index.ts",
