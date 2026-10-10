@@ -3,6 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
 import { anthropicAdapter, type ProviderAdapter } from '../adapters';
 
+// Fixed prices so the cost-attribute tests don't break when the auto-generated table drops or reprices a model.
+vi.mock('../pricing/anthropic', () => ({
+  ANTHROPIC_PRICING: {
+    'claude-sonnet-4-6': { inputCostPerToken: 0.000003, outputCostPerToken: 0.000015 },
+  },
+}));
+
 function makeSpan() {
   return {
     setAttribute: vi.fn(),
