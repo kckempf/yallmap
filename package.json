@@ -39,18 +39,18 @@
     "update-pricing": "tsx scripts/update-pricing.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^2.1.5",
-    "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
+    "@hono/node-server": "^2.1.6",
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.300.0",
     "@opentelemetry/resources": "^2.12.0",
-    "@opentelemetry/sdk-node": "^0.223.0",
-    "@opentelemetry/semantic-conventions": "^1.43.0",
-    "hono": "^4.13.13",
+    "@opentelemetry/sdk-node": "^0.300.0",
+    "@opentelemetry/semantic-conventions": "^1.44.0",
+    "hono": "^4.13.16",
     "pino": "^10.4.0",
     "undici": "^8.12.3"
   },
   "devDependencies": {
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.0.5",
     "pino-pretty": "^13.2.0",
     "tsx": "^4.23.15",
