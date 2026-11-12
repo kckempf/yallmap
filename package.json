@@ -26,7 +26,7 @@
     "ollama"
   ],
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=26.0.0"
   },
   "scripts": {
     "dev": "node --env-file=.env --require tsx/cjs --watch src/index.ts",
@@ -40,10 +40,11 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.5",
-    "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
-    "@opentelemetry/resources": "^2.12.0",
-    "@opentelemetry/sdk-node": "^0.223.0",
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/core": "^3.1.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.301.1",
+    "@opentelemetry/resources": "^3.1.1",
+    "@opentelemetry/sdk-node": "^0.301.1",
     "@opentelemetry/semantic-conventions": "^1.43.0",
     "hono": "^4.13.13",
     "pino": "^10.4.0",
