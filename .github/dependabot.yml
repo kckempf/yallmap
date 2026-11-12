@@ -5,7 +5,26 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Track the Node major we run on; bump deliberately with the runtime
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
+      opentelemetry:
+        patterns:
+          - "@opentelemetry/*"
+        update-types:
+          - major
+          - minor
+          - patch
+      hono:
+        patterns:
+          - "hono"
+          - "@hono/*"
+        update-types:
+          - major
+          - minor
+          - patch
       vitest:
         patterns:
           - "vitest"
